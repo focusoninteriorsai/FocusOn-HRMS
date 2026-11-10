@@ -1,283 +1,322 @@
 /**
- * FOCUSON HRMS - Authentication & Session Engine (Google Apps Script)
- * Salted+peppered iterated HMAC-SHA256, brute-force lockout, hashed token storage,
- * and forced password change enforcement.
+ * Employee-ID authentication, configurable password policy, brute-force defense,
+ * idle+absolute sessions and logout-all. Raw passwords/tokens are never stored.
  */
-
-var Auth = (function() {
-  var MAX_FAILED_ATTEMPTS = 5;
-  var LOCKOUT_DURATION_SEC = 900; // 15 minutes lockout
-  var SESSION_DURATION_HOURS = 12;
-
-  /**
-   * Helper: Brute-force rate limiter via CacheService.
-   */
-  function checkLockout(employeeId) {
-    var cache = CacheService.getScriptCache();
-    var failCount = parseInt(cache.get('FAIL_COUNT_' + employeeId) || '0', 10);
-    if (failCount >= MAX_FAILED_ATTEMPTS) {
-      throw {
-        code: 'LOCKED',
-        message: 'Account temporarily locked due to multiple failed login attempts. Please try again after 15 minutes.'
-      };
-    }
-  }
-
-  function recordFailedAttempt(employeeId, clientMeta) {
-    var cache = CacheService.getScriptCache();
-    var key = 'FAIL_COUNT_' + employeeId;
-    var failCount = parseInt(cache.get(key) || '0', 10) + 1;
-    cache.put(key, String(failCount), LOCKOUT_DURATION_SEC);
-
-    Audit.logEvent('LOGIN_FAILED', employeeId, 'Users', employeeId, 'FAILED', {
-      attempt: failCount,
-      locked: failCount >= MAX_FAILED_ATTEMPTS
-    }, clientMeta);
-  }
-
-  function clearFailedAttempts(employeeId) {
-    var cache = CacheService.getScriptCache();
-    cache.remove('FAIL_COUNT_' + employeeId);
-  }
-
-  /**
-   * Authenticates user with Employee ID + Password.
-   */
-  function login(employeeId, password, clientMeta) {
-    if (!employeeId || !password) {
-      throw { code: 'VALIDATION', message: 'Employee ID and password are required.' };
-    }
-
-    var cleanEmpId = String(employeeId).trim().toUpperCase();
-    checkLockout(cleanEmpId);
-
-    // Fetch user record
-    var users = Database.getAll('Users');
-    var targetUser = null;
-    for (var i = 0; i < users.length; i++) {
-      if (users[i].employee_id === cleanEmpId && users[i].status !== 'DELETED') {
-        targetUser = users[i];
-        break;
-      }
-    }
-
-    // Leaver rule / non-existent user check
-    if (!targetUser || targetUser.status !== 'ACTIVE') {
-      recordFailedAttempt(cleanEmpId, clientMeta);
-      throw { code: 'FORBIDDEN', message: 'Invalid credentials or inactive account.' };
-    }
-
-    // Verify password hash
-    var computedHash = Utils.hashPassword(password, targetUser.password_salt);
-    if (computedHash !== targetUser.password_hash) {
-      recordFailedAttempt(cleanEmpId, clientMeta);
-      throw { code: 'FORBIDDEN', message: 'Invalid credentials or inactive account.' };
-    }
-
-    // Password verified! Clear brute-force counter
-    clearFailedAttempts(cleanEmpId);
-
-    // Generate cryptographic session token
-    var rawToken = Utils.generateSessionToken();
-    var tokenHash = Utils.hashSessionToken(rawToken);
-
-    var now = new Date();
-    var expiresAt = new Date(now.getTime() + SESSION_DURATION_HOURS * 3600 * 1000).toISOString();
-
-    Database.insert('Sessions', {
-      id: 'sess_' + Utilities.getUuid().replace(/-/g, '').substring(0, 16),
-      employee_id: cleanEmpId,
-      token_hash: tokenHash,
-      expires_at: expiresAt,
-      last_seen_at: now.toISOString(),
-      user_agent_hash: (clientMeta && clientMeta.uaHash) || '',
-      ip_hash: (clientMeta && clientMeta.ipHash) || '',
-      status: 'ACTIVE'
-    }, cleanEmpId);
-
-    // Fetch employee profile details for shell display
-    var employees = Database.getAllCached('Employees');
-    var empProfile = null;
-    for (var e = 0; e < employees.length; e++) {
-      if (employees[e].id === cleanEmpId || employees[e].employee_id === cleanEmpId) {
-        empProfile = employees[e];
-        break;
-      }
-    }
-
-    var effective = Permissions.resolveEffectivePermissions(cleanEmpId);
-
-    Audit.logEvent('LOGIN_SUCCESS', cleanEmpId, 'Users', cleanEmpId, 'SUCCESS', {
-      mustChangePassword: targetUser.must_change_password === true || String(targetUser.must_change_password).toLowerCase() === 'true'
-    }, clientMeta);
-
+var Auth = (function () {
+  function securitySettings() {
     return {
-      token: rawToken,
-      mustChangePassword: targetUser.must_change_password === true || String(targetUser.must_change_password).toLowerCase() === 'true',
-      effectivePermissions: effective.permissions,
-      user: {
-        employeeId: cleanEmpId,
-        name: empProfile ? (empProfile.first_name + ' ' + (empProfile.last_name || '')).trim() : cleanEmpId,
-        department: empProfile ? empProfile.department : '',
-        designation: empProfile ? empProfile.designation : '',
-        branch: empProfile ? empProfile.branch : '',
-        reportingManagerId: empProfile ? empProfile.reporting_manager_id : '',
-        isSuperAdmin: effective.isSuperAdmin,
-        roles: effective.roleIds
-      }
+      idleSeconds: boundedSetting('SESSION_IDLE_MINUTES', 30, 5, 480) * 60,
+      absoluteSeconds: boundedSetting('SESSION_ABSOLUTE_HOURS', 12, 1, 168) * 3600,
+      maxFailures: boundedSetting('LOGIN_MAX_FAILED_ATTEMPTS', 5, 3, 20),
+      lockSeconds: boundedSetting('LOGIN_LOCK_MINUTES', 15, 1, 1440) * 60,
+      globalPerMinute: boundedSetting('LOGIN_GLOBAL_MAX_PER_MINUTE', 100, 20, 1000),
+      passwordMinLength: boundedSetting('PASSWORD_MIN_LENGTH', 12, 8, 64),
+      passwordComplexity: String(Database.getSetting('PASSWORD_REQUIRE_COMPLEXITY', 'TRUE')).toUpperCase() !== 'FALSE'
     };
   }
 
-  /**
-   * Validates a session token, updates last_seen_at, and returns current user context.
-   */
-  function validateSession(rawToken) {
-    if (!rawToken) {
-      throw { code: 'AUTH_REQUIRED', message: 'Session token missing.' };
+  function boundedSetting(key, fallback, minimum, maximum) {
+    return Math.min(maximum, Math.max(minimum, Utils.asNumber(Database.getSetting(key, fallback), fallback)));
+  }
+
+  function failureKey(employeeId) {
+    return 'LOGIN_FAIL_V1_' + Utils.sha256(employeeId);
+  }
+
+  function globalKey() {
+    return 'LOGIN_GLOBAL_V1_' + Utilities.formatDate(new Date(), 'UTC', 'yyyyMMddHHmm');
+  }
+
+  function checkLoginRate(employeeId, settings) {
+    var cache = CacheService.getScriptCache();
+    var lockedUntil = Number(cache.get(failureKey(employeeId) + '_LOCK') || 0);
+    if (lockedUntil > Date.now()) {
+      Utils.fail('RATE_LIMITED', 'Too many sign-in attempts. Try again later.', { retryAfterSeconds: Math.ceil((lockedUntil - Date.now()) / 1000) });
+    }
+  }
+
+  function countGlobalAttempt(settings) {
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(2000)) Utils.fail('LOCKED', 'Authentication is busy. Retry shortly.', { retryAfterSeconds: 2 });
+    try {
+      var cache = CacheService.getScriptCache();
+      var key = globalKey();
+      var count = Number(cache.get(key) || 0) + 1;
+      cache.put(key, String(count), 120);
+      if (count > settings.globalPerMinute) Utils.fail('RATE_LIMITED', 'Too many sign-in attempts. Try again later.', { retryAfterSeconds: 60 });
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  function recordFailure(employeeId, settings) {
+    var lock = LockService.getScriptLock();
+    var result = { count: 1, locked: false };
+    if (!lock.tryLock(2000)) Utils.fail('LOCKED', 'Authentication is busy. Retry shortly.', { retryAfterSeconds: 2 });
+    try {
+      var cache = CacheService.getScriptCache();
+      var key = failureKey(employeeId);
+      var count = Number(cache.get(key) || 0) + 1;
+      cache.put(key, String(count), settings.lockSeconds);
+      if (count >= settings.maxFailures) {
+        cache.put(key + '_LOCK', String(Date.now() + settings.lockSeconds * 1000), settings.lockSeconds);
+        cache.remove(key);
+        result.locked = true;
+      }
+      result.count = count;
+      return result;
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  function clearFailures(employeeId) {
+    var cache = CacheService.getScriptCache();
+    cache.remove(failureKey(employeeId));
+    cache.remove(failureKey(employeeId) + '_LOCK');
+  }
+
+  function findUser(employeeId) {
+    return Database.findOne('Users', function (user) {
+      return user.employee_id === employeeId && String(user.status).toUpperCase() !== 'DELETED';
+    });
+  }
+
+  function findEmployee(employeeId) {
+    return Database.findOne('Employees', function (employee) {
+      return String(employee.employee_id || employee.id) === employeeId && String(employee.status).toUpperCase() !== 'DELETED';
+    }, { cached: true });
+  }
+
+  function login(payload, context) {
+    var employeeId = Utils.normalizeEmployeeId(payload.employeeId);
+    if (typeof payload.password !== 'string' || !payload.password || payload.password.length > 128) {
+      Utils.fail('VALIDATION', 'Employee ID and password are required.');
+    }
+    var settings = securitySettings();
+    countGlobalAttempt(settings);
+    checkLoginRate(employeeId, settings);
+
+    var user = findUser(employeeId);
+    var employee = user ? findEmployee(employeeId) : null;
+    var iterations = user ? user.password_iterations : Utils.configuredHashIterations();
+    var salt = user ? user.password_salt : Utils.sha256('UNKNOWN-ACCOUNT:' + employeeId + ':' + Utils.getServerPepper());
+    var expectedHash = user ? user.password_hash : '';
+    var actualHash = Utils.hashPassword(payload.password, salt, iterations);
+    var passwordMatches = Boolean(user) && Utils.constantTimeEquals(actualHash, expectedHash);
+    var accountActive = Boolean(user && employee && String(user.status).toUpperCase() === 'ACTIVE' && String(employee.status).toUpperCase() === 'ACTIVE');
+
+    if (!passwordMatches || !accountActive) {
+      var failure = recordFailure(employeeId, settings);
+      Audit.logEvent('LOGIN_FAILED', employeeId, 'Users', user ? user.id : '', 'DENIED', {
+        locked: failure.locked,
+        reason: 'INVALID_CREDENTIALS'
+      }, context);
+      Utils.fail('AUTH_REQUIRED', 'Invalid Employee ID or password.');
     }
 
-    var tokenHash = Utils.hashSessionToken(rawToken);
-    var sessions = Database.getAll('Sessions');
-    var activeSession = null;
-    var nowIso = Utils.nowIso();
+    clearFailures(employeeId);
+    var rawToken = Utils.generateSessionToken();
+    var now = new Date();
+    var sessionRecord = Database.insert('Sessions', {
+      employee_id: employeeId,
+      token_hash: Utils.hashSessionToken(rawToken),
+      last_seen_at: now.toISOString(),
+      expires_at: Utils.addSeconds(now, settings.absoluteSeconds),
+      device_hash: context.deviceHash || '',
+      status: 'ACTIVE'
+    }, employeeId);
+    var response = buildSessionResponse(user, employee, sessionRecord, settings, false);
+    response.token = rawToken;
+    Audit.logEvent('LOGIN_SUCCESS', employeeId, 'Users', user.id, 'SUCCESS', {
+      mustChangePassword: response.mustChangePassword
+    }, context);
+    return response;
+  }
 
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].token_hash === tokenHash && sessions[i].status === 'ACTIVE') {
-        if (sessions[i].expires_at > nowIso) {
-          activeSession = sessions[i];
-          break;
+  function authenticate(rawToken, context) {
+    if (!rawToken || typeof rawToken !== 'string') Utils.fail('AUTH_REQUIRED', 'Authentication is required.');
+    if (rawToken.length > 160) Utils.fail('SESSION_EXPIRED', 'Your session is no longer valid.');
+    var tokenHash = Utils.hashSessionToken(rawToken);
+    var session = Database.findOne('Sessions', function (row) {
+      return row.token_hash === tokenHash && String(row.status).toUpperCase() === 'ACTIVE';
+    });
+    if (!session) Utils.fail('SESSION_EXPIRED', 'Your session has expired. Sign in again.');
+
+    var settings = securitySettings();
+    var now = new Date();
+    var absoluteExpiry = Utils.dateValue(session.expires_at);
+    var lastSeen = Utils.dateValue(session.last_seen_at || session.created_at);
+    var idleExpired = !lastSeen || now.getTime() - lastSeen.getTime() >= settings.idleSeconds * 1000;
+    if (!absoluteExpiry || absoluteExpiry.getTime() <= now.getTime() || idleExpired) {
+      Database.update('Sessions', session.id, { status: 'EXPIRED', revoked_at: now.toISOString() }, session.employee_id);
+      Utils.fail('SESSION_EXPIRED', 'Your session has expired. Sign in again.');
+    }
+    if (session.device_hash && session.device_hash !== (context.deviceHash || '')) {
+      Database.update('Sessions', session.id, { status: 'REVOKED', revoked_at: now.toISOString() }, session.employee_id);
+      Utils.fail('SESSION_EXPIRED', 'Your session has expired. Sign in again.');
+    }
+
+    var user = findUser(session.employee_id);
+    var employee = user ? findEmployee(user.employee_id) : null;
+    if (!user || !employee || String(user.status).toUpperCase() !== 'ACTIVE' || String(employee.status).toUpperCase() !== 'ACTIVE') {
+      Database.update('Sessions', session.id, { status: 'REVOKED', revoked_at: now.toISOString() }, session.employee_id);
+      Utils.fail('SESSION_EXPIRED', 'Your session has expired. Sign in again.');
+    }
+
+    if (now.getTime() - lastSeen.getTime() >= 60000) {
+      session = Database.update('Sessions', session.id, { last_seen_at: now.toISOString() }, session.employee_id);
+    }
+    var effective = Permissions.resolveEffectivePermissions(user.employee_id);
+    var actor = {
+      sessionValidated: true,
+      sessionId: session.id,
+      employeeId: user.employee_id,
+      displayName: employee.display_name || user.employee_id,
+      departmentId: employee.department_id || '',
+      department: employee.department || '',
+      branchId: employee.branch_id || '',
+      branch: employee.branch || '',
+      designation: employee.designation || '',
+      isSuperAdmin: effective.isSuperAdmin,
+      permissions: effective.permissions,
+      userId: user.id,
+      mustChangePassword: Utils.asBoolean(user.must_change_password),
+      rawTokenHash: tokenHash
+    };
+    return { actor: actor, user: user, employee: employee, sessionRecord: session, settings: settings, effective: effective };
+  }
+
+  function buildSessionResponse(user, employee, sessionRecord, settings, includeToken) {
+    var effective = Permissions.resolveEffectivePermissions(user.employee_id);
+    return {
+      mustChangePassword: Utils.asBoolean(user.must_change_password),
+      effectivePermissions: effective.permissions,
+      scopes: effective.scopes,
+      user: {
+        employeeId: user.employee_id,
+        displayName: employee.display_name || user.employee_id,
+        departmentId: employee.department_id || '',
+        department: employee.department || '',
+        designation: employee.designation || '',
+        branchId: employee.branch_id || '',
+        branch: employee.branch || '',
+        reportingManagerId: employee.reporting_manager_id || '',
+        isSuperAdmin: effective.isSuperAdmin,
+        roles: effective.roleIds,
+        language: user.language || 'en',
+        theme: user.theme || 'light',
+        simpleMode: Utils.asBoolean(user.simple_mode)
+      },
+      session: {
+        idleTimeoutSeconds: settings.idleSeconds,
+        absoluteExpiresAt: Utils.toIso(sessionRecord.expires_at),
+        lastSeenAt: Utils.toIso(sessionRecord.last_seen_at || sessionRecord.created_at),
+        passwordPolicy: {
+          minLength: settings.passwordMinLength,
+          requireComplexity: settings.passwordComplexity
         }
       }
-    }
-
-    if (!activeSession) {
-      throw { code: 'SESSION_EXPIRED', message: 'Your session has expired. Please sign in again.' };
-    }
-
-    // Touch last_seen_at
-    try {
-      Database.update('Sessions', activeSession.id, { last_seen_at: nowIso }, activeSession.employee_id);
-    } catch (e) {
-      // Non-blocking
-    }
-
-    var cleanEmpId = activeSession.employee_id;
-    var users = Database.getAll('Users');
-    var userRecord = null;
-    for (var u = 0; u < users.length; u++) {
-      if (users[u].employee_id === cleanEmpId && users[u].status === 'ACTIVE') {
-        userRecord = users[u];
-        break;
-      }
-    }
-
-    if (!userRecord) {
-      throw { code: 'FORBIDDEN', message: 'User account is deactivated.' };
-    }
-
-    var employees = Database.getAllCached('Employees');
-    var empProfile = null;
-    for (var ep = 0; ep < employees.length; ep++) {
-      if (employees[ep].id === cleanEmpId || employees[ep].employee_id === cleanEmpId) {
-        empProfile = employees[ep];
-        break;
-      }
-    }
-
-    var effective = Permissions.resolveEffectivePermissions(cleanEmpId);
-
-    return {
-      token: rawToken,
-      mustChangePassword: userRecord.must_change_password === true || String(userRecord.must_change_password).toLowerCase() === 'true',
-      effectivePermissions: effective.permissions,
-      user: {
-        employeeId: cleanEmpId,
-        name: empProfile ? (empProfile.first_name + ' ' + (empProfile.last_name || '')).trim() : cleanEmpId,
-        department: empProfile ? empProfile.department : '',
-        designation: empProfile ? empProfile.designation : '',
-        branch: empProfile ? empProfile.branch : '',
-        reportingManagerId: empProfile ? empProfile.reporting_manager_id : '',
-        isSuperAdmin: effective.isSuperAdmin,
-        roles: effective.roleIds
-      }
     };
   }
 
-  /**
-   * Changes password for the authenticated user.
-   */
-  function changePassword(employeeId, currentPassword, newPassword) {
-    if (!newPassword || newPassword.length < 8) {
-      throw { code: 'VALIDATION', message: 'New password must be at least 8 characters long.' };
+  function sessionResponse(authentication) {
+    return buildSessionResponse(authentication.user, authentication.employee, authentication.sessionRecord, authentication.settings, false);
+  }
+
+  function validateNewPassword(currentPassword, newPassword, settings) {
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword) {
+      Utils.fail('VALIDATION', 'Current and new passwords are required.');
     }
-
-    var users = Database.getAll('Users');
-    var user = null;
-    for (var i = 0; i < users.length; i++) {
-      if (users[i].employee_id === employeeId && users[i].status === 'ACTIVE') {
-        user = users[i];
-        break;
-      }
+    if (currentPassword.length > 128 || newPassword.length > 128) Utils.fail('VALIDATION', 'Passwords cannot exceed 128 characters.');
+    if (newPassword.length < settings.passwordMinLength) Utils.fail('VALIDATION', 'The new password does not meet the configured minimum length.', { minLength: settings.passwordMinLength });
+    if (settings.passwordComplexity && !(/[a-z]/.test(newPassword) && /[A-Z]/.test(newPassword) && /[0-9]/.test(newPassword) && /[^A-Za-z0-9]/.test(newPassword))) {
+      Utils.fail('VALIDATION', 'The new password does not meet the configured complexity policy.');
     }
+    if (Utils.constantTimeEquals(currentPassword, newPassword)) Utils.fail('VALIDATION', 'The new password must be different from the current password.');
+  }
 
-    if (!user) throw { code: 'NOT_FOUND', message: 'User not found.' };
-
-    // Verify current password
-    var computedOld = Utils.hashPassword(currentPassword, user.password_salt);
-    if (computedOld !== user.password_hash) {
-      throw { code: 'FORBIDDEN', message: 'Current password does not match.' };
+  function changePassword(authentication, payload, context) {
+    var user = authentication.user;
+    validateNewPassword(payload.currentPassword, payload.newPassword, authentication.settings);
+    var actual = Utils.hashPassword(payload.currentPassword, user.password_salt, user.password_iterations);
+    if (!Utils.constantTimeEquals(actual, user.password_hash)) {
+      Audit.logEvent('PASSWORD_CHANGE_FAILED', user.employee_id, 'Users', user.id, 'DENIED', { reason: 'CURRENT_PASSWORD' }, context);
+      Utils.fail('FORBIDDEN', 'The current password is incorrect.');
     }
-
-    // Generate fresh salt and hash
-    var newSalt = Utils.generateSalt();
-    var newHash = Utils.hashPassword(newPassword, newSalt);
-
+    var salt = Utils.generateSalt();
+    var iterations = Utils.configuredHashIterations();
+    var hash = Utils.hashPassword(payload.newPassword, salt, iterations);
     Database.update('Users', user.id, {
-      password_hash: newHash,
-      password_salt: newSalt,
+      password_salt: salt,
+      password_iterations: iterations,
+      password_hash: hash,
       must_change_password: false,
-      password_updated_at: Utils.nowIso()
-    }, employeeId);
-
-    Audit.logEvent('PASSWORD_CHANGED', employeeId, 'Users', user.id, 'SUCCESS');
-    return { success: true };
+      password_changed_at: Utils.nowIso()
+    }, user.employee_id);
+    revokeUserSessions(user.employee_id, authentication.actor.rawTokenHash);
+    Audit.logEvent('PASSWORD_CHANGED', user.employee_id, 'Users', user.id, 'SUCCESS', { otherSessionsRevoked: true }, context);
+    return { changed: true };
   }
 
-  /**
-   * Invalidates current session.
-   */
-  function logout(rawToken) {
-    if (!rawToken) return { success: true };
-    var tokenHash = Utils.hashSessionToken(rawToken);
-    var sessions = Database.getAll('Sessions');
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].token_hash === tokenHash) {
-        Database.update('Sessions', sessions[i].id, { status: 'EXPIRED' }, sessions[i].employee_id);
-        break;
-      }
+  function updatePreferences(authentication, payload, context) {
+    var changes = {};
+    if (Object.prototype.hasOwnProperty.call(payload, 'language')) {
+      if (['en', 'hi'].indexOf(payload.language) < 0) Utils.fail('VALIDATION', 'Language is not supported.');
+      changes.language = payload.language;
     }
-    return { success: true };
+    if (Object.prototype.hasOwnProperty.call(payload, 'theme')) {
+      if (['light', 'dark'].indexOf(payload.theme) < 0) Utils.fail('VALIDATION', 'Theme is not supported.');
+      changes.theme = payload.theme;
+    }
+    if (!Object.keys(changes).length) Utils.fail('VALIDATION', 'No supported preference was supplied.');
+    var updated = Database.update('Users', authentication.user.id, changes, authentication.actor.employeeId);
+    Audit.logEvent('PREFERENCES_CHANGED', authentication.actor.employeeId, 'Users', authentication.user.id, 'SUCCESS', changes, context);
+    return { language: updated.language || 'en', theme: updated.theme || 'light' };
   }
 
-  /**
-   * Invalidates ALL active sessions for a user (security kill-switch).
-   */
-  function logoutAll(employeeId) {
-    var sessions = Database.getAll('Sessions');
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].employee_id === employeeId && sessions[i].status === 'ACTIVE') {
-        Database.update('Sessions', sessions[i].id, { status: 'REVOKED' }, employeeId);
-      }
-    }
-    Audit.logEvent('LOGOUT_ALL_SESSIONS', employeeId, 'Sessions', employeeId, 'SUCCESS');
-    return { success: true };
+  function revokeUserSessions(employeeId, exceptTokenHash) {
+    return Database.updateMany('Sessions', function (session) {
+      return session.employee_id === employeeId && String(session.status).toUpperCase() === 'ACTIVE' && session.token_hash !== exceptTokenHash;
+    }, { status: 'REVOKED', revoked_at: Utils.nowIso() }, employeeId);
+  }
+
+  function logout(authentication, context) {
+    Database.update('Sessions', authentication.sessionRecord.id, { status: 'REVOKED', revoked_at: Utils.nowIso() }, authentication.actor.employeeId);
+    Audit.logEvent('LOGOUT', authentication.actor.employeeId, 'Sessions', authentication.sessionRecord.id, 'SUCCESS', {}, context);
+    return { loggedOut: true };
+  }
+
+  function logoutAll(authentication, context) {
+    var revoked = revokeUserSessions(authentication.actor.employeeId, null);
+    Audit.logEvent('LOGOUT_ALL', authentication.actor.employeeId, 'Users', authentication.user.id, 'SUCCESS', { revokedCount: revoked.length }, context);
+    return { loggedOut: true, revokedCount: revoked.length };
+  }
+
+  function cleanupExpiredSessions() {
+    var now = new Date();
+    var retentionCutoff = now.getTime() - 30 * 86400000;
+    return Database.updateMany('Sessions', function (session) {
+      var expiry = Utils.dateValue(session.expires_at);
+      var updated = Utils.dateValue(session.updated_at || session.created_at);
+      var activeExpired = String(session.status).toUpperCase() === 'ACTIVE' && expiry && expiry.getTime() <= now.getTime();
+      var oldInactive = ['REVOKED', 'EXPIRED'].indexOf(String(session.status).toUpperCase()) >= 0 && updated && updated.getTime() < retentionCutoff;
+      return activeExpired || oldInactive;
+    }, function (session) {
+      if (String(session.status).toUpperCase() === 'ACTIVE') return { status: 'EXPIRED', revoked_at: now.toISOString() };
+      return { status: 'DELETED' };
+    }, 'SYSTEM').length;
   }
 
   return {
     login: login,
-    validateSession: validateSession,
+    authenticate: authenticate,
+    sessionResponse: sessionResponse,
     changePassword: changePassword,
+    updatePreferences: updatePreferences,
     logout: logout,
-    logoutAll: logoutAll
+    logoutAll: logoutAll,
+    cleanupExpiredSessions: cleanupExpiredSessions,
+    securitySettings: securitySettings
   };
 })();

@@ -1,17 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>FOCUSON HRMS - Redirecting</title>
-  <script>
-    // GitHub Pages SPA redirect preserving path as hash
-    const path = window.location.pathname;
-    const search = window.location.search;
-    const hash = window.location.hash;
-    window.location.replace('./index.html' + (path && path !== '/' ? '#/' + path.replace(/^\//, '') : '') + (hash ? hash : ''));
-  </script>
-</head>
-<body>
-  <p>Redirecting to FOCUSON HRMS...</p>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="0; url=./index.html">
+    <meta name="robots" content="noindex">
+    <title>FOCUSON HRMS</title>
+  </head>
+  <body>
+    <p><a href="./index.html">FOCUSON HRMS</a></p>
+  </body>
 </html>

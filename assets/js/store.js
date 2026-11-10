@@ -1,42 +1,56 @@
-// FOCUSON HRMS - Reactive State Store
+const listeners = new Set();
 
 const state = {
+  ready: false,
   user: null,
-  token: null,
   mustChangePassword: false,
-  effectivePermissions: new Set(),
+  permissions: new Set(),
+  scopes: {},
+  session: null,
   branding: {
     companyName: 'FOCUSON HRMS',
-    tagline: 'Enterprise HR & Payroll Management',
-    logoUrl: './assets/icons/icon-192.svg',
+    tagline: '',
+    logoUrl: '',
     loginNotice: '',
-    themeTokens: null
-  },
-  simpleMode: localStorage.getItem('FOCUSON_SIMPLE_MODE') === 'true',
-  activeRoute: '#/login'
+    featureHighlights: [],
+    defaultLanguage: 'en',
+    defaultTheme: 'light',
+    themeTokens: {},
+    background: { type: 'gradient', preset: 'astra', overlayOpacity: 0, blur: 0 }
+  }
 };
-
-const subscribers = new Set();
 
 export function getState() {
   return state;
 }
 
 export function setState(patch) {
-  Object.assign(state, patch);
-  if (patch.simpleMode !== undefined) {
-    localStorage.setItem('FOCUSON_SIMPLE_MODE', String(patch.simpleMode));
-  }
-  subscribers.forEach(fn => fn(state));
+  Object.keys(patch).forEach((key) => {
+    state[key] = patch[key];
+  });
+  listeners.forEach((listener) => listener(state));
 }
 
-export function subscribe(fn) {
-  subscribers.add(fn);
-  return () => subscribers.delete(fn);
+export function mergeBranding(branding) {
+  state.branding = { ...state.branding, ...branding };
+  listeners.forEach((listener) => listener(state));
 }
 
-export function hasPermission(permissionKey) {
-  if (!state.user) return false;
-  if (state.user.isSuperAdmin) return true;
-  return state.effectivePermissions.has(permissionKey);
+export function clearSessionState() {
+  state.user = null;
+  state.mustChangePassword = false;
+  state.permissions = new Set();
+  state.scopes = {};
+  state.session = null;
+  listeners.forEach((listener) => listener(state));
+}
+
+export function hasPermission(permission) {
+  if (!permission) return true;
+  return Boolean(state.user && (state.user.isSuperAdmin || state.permissions.has(permission)));
+}
+
+export function subscribe(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }

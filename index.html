@@ -1,39 +1,133 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light" data-card-style="soft" data-density="comfortable" data-font="system">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://script.google.com https://script.googleusercontent.com; img-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self';" />
-    
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://script.google.com https://script.googleusercontent.com; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; manifest-src 'self'; worker-src 'self'">
+    <meta name="referrer" content="no-referrer">
+    <meta name="theme-color" content="#f4f7fc">
+    <meta name="description" content="FOCUSON HRMS secure employee access">
     <title>FOCUSON HRMS</title>
-    <meta name="description" content="Production-ready enterprise HR and Payroll web application with Google Apps Script API, Google Sheets database, role-based access control, and geofenced attendance." />
-    <meta property="og:title" content="FOCUSON HRMS" />
-    <meta property="og:description" content="Production-ready enterprise HR and Payroll web application with Google Apps Script API, Google Sheets database, role-based access control, and geofenced attendance." />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="manifest" href="./manifest.webmanifest" />
-    <meta name="theme-color" content="#1d4ed8" />
-    <link rel="icon" type="image/svg+xml" href="./assets/icons/icon-192.svg" />
-
-    <!-- Astra Design System CSS Layers -->
-    <link rel="stylesheet" href="./assets/css/tokens.css" />
-    <link rel="stylesheet" href="./assets/css/base.css" />
-    <link rel="stylesheet" href="./assets/css/components.css" />
-    <link rel="stylesheet" href="./assets/css/animations.css" />
-    <link rel="stylesheet" href="./assets/css/pages.css" />
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="./assets/icons/icon-192.svg">
+    <link rel="stylesheet" href="./assets/css/tokens.css">
+    <link rel="stylesheet" href="./assets/css/base.css">
+    <link rel="stylesheet" href="./assets/css/components.css">
+    <link rel="stylesheet" href="./assets/css/animations.css">
+    <link rel="stylesheet" href="./assets/css/pages.css">
   </head>
   <body>
-    <div id="root">
-      <!-- Accessible initial shell placeholder -->
-      <noscript>
-        <div style="padding: 2rem; text-align: center; font-family: sans-serif;">
-          <h2>JavaScript Required</h2>
-          <p>FOCUSON HRMS requires JavaScript to execute the zero-trust security model.</p>
-        </div>
-      </noscript>
+    <a class="skip-link" href="#main-content" data-i18n="common.skipContent">Skip to content</a>
+
+    <div id="boot-screen" class="boot-screen" role="status" aria-live="polite">
+      <img src="./assets/icons/icon-192.svg" alt="" class="boot-logo">
+      <span class="spinner" aria-hidden="true"></span>
+      <span data-i18n="common.loading">Loading</span>
     </div>
 
-    <!-- Main ES Module Entry Point -->
+    <div id="login-view" class="login-page" hidden>
+      <div class="ambient-background" aria-hidden="true"><span></span><span></span><span></span></div>
+      <header class="public-header">
+        <a class="brand-link" href="#/login" aria-label="FOCUSON HRMS">
+          <img id="public-brand-logo" class="brand-logo" src="./assets/icons/icon-192.svg" alt="" data-i18n-aria="login.companyLogo">
+          <span id="public-brand-name">FOCUSON HRMS</span>
+        </a>
+        <div class="header-controls">
+          <label class="compact-select">
+            <span class="visually-hidden" data-i18n="login.language">Language</span>
+            <select id="public-language" aria-label="Language" data-i18n-aria="login.language">
+              <option value="en">English</option>
+              <option value="hi">हिन्दी</option>
+            </select>
+          </label>
+          <button id="public-theme" class="icon-button" type="button" data-i18n-aria="login.toggleTheme" aria-label="Toggle theme"></button>
+        </div>
+      </header>
+
+      <main id="main-content" class="login-main">
+        <section class="hero-section" aria-labelledby="hero-company-name">
+          <p class="eyebrow" data-i18n="login.eyebrow">Secure employee workspace</p>
+          <h1 id="hero-company-name">FOCUSON HRMS</h1>
+          <p id="public-tagline" class="hero-tagline" hidden></p>
+          <div id="public-features" class="public-features"></div>
+        </section>
+
+        <section class="login-card glass-card" aria-labelledby="login-title">
+          <div class="login-card-heading">
+            <span class="login-lock" aria-hidden="true"></span>
+            <div>
+              <h2 id="login-title" data-i18n="login.title">Sign in</h2>
+              <p data-i18n="login.subtitle">Use your company Employee ID.</p>
+            </div>
+          </div>
+          <div id="login-notice" class="notice-card" hidden></div>
+          <div id="configuration-notice" class="notice-card notice-warning" role="status" hidden></div>
+          <form id="login-form" novalidate>
+            <div class="form-field">
+              <label for="employee-id" data-i18n="login.employeeId">Employee ID</label>
+              <input id="employee-id" name="employeeId" class="form-input" type="text" autocomplete="username" autocapitalize="characters" spellcheck="false" maxlength="64" required>
+            </div>
+            <div class="form-field">
+              <div class="label-row">
+                <label for="login-password" data-i18n="login.password">Password</label>
+                <button id="forgot-password" class="text-button" type="button" data-i18n="login.forgotPassword">Forgot password?</button>
+              </div>
+              <div class="password-input-wrap">
+                <input id="login-password" name="password" class="form-input" type="password" autocomplete="current-password" maxlength="128" required>
+                <button id="toggle-password" class="password-toggle" type="button" data-i18n-aria="login.showPassword" aria-label="Show password"></button>
+              </div>
+            </div>
+            <p id="login-error" class="form-message form-message-error" role="alert" hidden></p>
+            <button id="login-submit" class="button button-primary button-full" type="submit" data-i18n="login.signIn">Sign in</button>
+          </form>
+          <p class="login-help" data-i18n="login.accessHelp">Access is managed by your HR administrator.</p>
+        </section>
+      </main>
+      <footer class="public-footer"><span data-i18n="login.footer">Authorised use only. Activity is security audited.</span></footer>
+    </div>
+
+    <div id="app-view" class="app-shell" hidden>
+      <aside class="sidebar" aria-label="Primary navigation" data-i18n-aria="app.primaryNavigation">
+        <a class="brand-link sidebar-brand" href="#/dashboard">
+          <img id="app-brand-logo" class="brand-logo" src="./assets/icons/icon-192.svg" alt="">
+          <span id="app-brand-name">FOCUSON HRMS</span>
+        </a>
+        <nav id="desktop-navigation" class="side-navigation"></nav>
+        <div class="sidebar-footer">
+          <span class="security-chip" data-i18n="app.secureSession">Secure session</span>
+          <button id="sidebar-logout" class="nav-button" type="button"></button>
+        </div>
+      </aside>
+
+      <div class="app-column">
+        <header class="topbar">
+          <a class="brand-link mobile-brand" href="#/dashboard">
+            <img class="brand-logo" src="./assets/icons/icon-192.svg" alt="">
+            <span id="mobile-brand-name">FOCUSON HRMS</span>
+          </a>
+          <div class="topbar-actions">
+            <label class="compact-select">
+              <span class="visually-hidden" data-i18n="login.language">Language</span>
+              <select id="app-language" aria-label="Language" data-i18n-aria="login.language">
+                <option value="en">English</option>
+                <option value="hi">हिन्दी</option>
+              </select>
+            </label>
+            <button id="app-theme" class="icon-button" type="button" data-i18n-aria="login.toggleTheme" aria-label="Toggle theme"></button>
+            <a id="topbar-profile" class="profile-link" href="#/profile">
+              <span id="topbar-avatar" class="avatar avatar-small"></span>
+              <span id="topbar-user" class="topbar-user"></span>
+            </a>
+            <button id="topbar-logout" class="icon-button" type="button" data-i18n-aria="common.logout" aria-label="Sign out"></button>
+          </div>
+        </header>
+        <main id="main-app-content" class="app-content" tabindex="-1"></main>
+      </div>
+      <nav id="mobile-navigation" class="bottom-navigation" aria-label="Primary navigation" data-i18n-aria="app.primaryNavigation"></nav>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+    <noscript><div class="noscript-message" data-i18n="common.javascriptRequired">JavaScript is required to use FOCUSON HRMS.</div></noscript>
     <script type="module" src="./assets/js/app.js"></script>
   </body>
 </html>

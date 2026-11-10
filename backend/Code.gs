@@ -1,232 +1,215 @@
-/**
- * FOCUSON HRMS - Main Router & Dispatcher (Google Apps Script)
- * Single entry point for doPost / doGet, action dispatching, and standard JSON envelopes.
- */
+/** JSON Web App entry point and declarative action authorization registry. */
 
-function doGet(e) {
-  var health = {
-    ok: true,
-    status: 'healthy',
-    system: 'FOCUSON HRMS Web App API',
-    timestamp: new Date().toISOString()
-  };
-  return ContentService.createTextOutput(JSON.stringify(health))
-    .setMimeType(ContentService.MimeType.JSON);
+function doGet() {
+  return jsonResponse({ ok: true, data: { status: 'ok' }, reqId: null });
 }
 
-function doPost(e) {
+function doPost(event) {
   var reqId = null;
-
   try {
-    if (!e || !e.postData || !e.postData.contents) {
-      return respondJson(Utils.errorResponse('VALIDATION', 'Missing request body'));
+    if (!event || !event.postData || typeof event.postData.contents !== 'string' || !event.postData.contents) {
+      Utils.fail('VALIDATION', 'A JSON request body is required.');
     }
-
+    if (event.postData.contents.length > 262144) Utils.fail('VALIDATION', 'The request body is too large.');
     var body;
-    try {
-      body = JSON.parse(e.postData.contents);
-    } catch (parseErr) {
-      return respondJson(Utils.errorResponse('VALIDATION', 'Malformed JSON in request payload'));
-    }
-
-    reqId = body.reqId;
-    var action = body.action;
-    var token = body.token;
-    var payload = body.payload || {};
-
-    if (!action) {
-      return respondJson(Utils.errorResponse('VALIDATION', 'Action property is required', reqId));
-    }
-
-    var clientMeta = {
-      ipHash: (e.parameter && e.parameter.ip) ? Utils.hashSessionToken(e.parameter.ip) : '',
-      uaHash: (e.parameter && e.parameter.ua) ? Utils.hashSessionToken(e.parameter.ua) : ''
-    };
-
-    var result = dispatchAction(action, token, payload, clientMeta, reqId);
-    return respondJson(Utils.okResponse(result, reqId));
-
-  } catch (err) {
-    var code = err.code || 'SERVER';
-    var message = err.message || (typeof err === 'string' ? err : 'Internal server error');
-    return respondJson(Utils.errorResponse(code, message, reqId));
+    try { body = JSON.parse(event.postData.contents); } catch (error) { Utils.fail('VALIDATION', 'The request body is not valid JSON.'); }
+    Utils.assertObject(body, 'request');
+    reqId = body.reqId ? String(body.reqId).slice(0, 128) : Utilities.getUuid();
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(reqId)) Utils.fail('VALIDATION', 'reqId has an invalid format.');
+    var action = Utils.requireString(body, 'action', { max: 160, pattern: /^[a-z][a-z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)+$/ });
+    var payload = body.payload === undefined ? {} : body.payload;
+    Utils.assertObject(payload, 'payload');
+    var context = makeRequestContext(payload, reqId);
+    delete payload.__client;
+    var data = dispatchAction(action, body.token, payload, context);
+    return jsonResponse(Utils.okResponse(data, reqId));
+  } catch (error) {
+    var exposed = error && error.expose === true;
+    if (!exposed) console.error('FOCUSON request failure [' + (reqId || 'none') + ']: ' + (error && error.stack ? error.stack : error));
+    return jsonResponse(Utils.errorResponse(
+      exposed ? error.code : 'SERVER',
+      exposed ? error.message : 'The request could not be completed. Contact the administrator with the request ID.',
+      reqId,
+      exposed ? error.details : undefined
+    ));
   }
 }
 
-function respondJson(outputObj) {
-  return ContentService.createTextOutput(JSON.stringify(outputObj))
-    .setMimeType(ContentService.MimeType.JSON);
+function jsonResponse(value) {
+  return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function dispatchAction(action, token, payload, clientMeta, reqId) {
-  // 1. PUBLIC ACTIONS
-  if (action === 'public.config') {
-    return handlePublicConfig();
-  }
-
-  if (action === 'auth.login') {
-    return Auth.login(payload.employeeId, payload.password, clientMeta);
-  }
-
-  // 2. AUTHENTICATED ACTIONS
-  var session = Auth.validateSession(token);
-  var actor = {
-    employeeId: session.user.employeeId,
-    name: session.user.name,
-    department: session.user.department,
-    designation: session.user.designation,
-    branch: session.user.branch,
-    isSuperAdmin: session.user.isSuperAdmin,
-    permissions: session.effectivePermissions
+function makeRequestContext(payload, reqId) {
+  var client = payload.__client && typeof payload.__client === 'object' ? payload.__client : {};
+  var userAgent = typeof client.userAgent === 'string' ? client.userAgent.slice(0, 512) : '';
+  var hasPepper = Boolean(PropertiesService.getScriptProperties().getProperty('AUTH_PEPPER'));
+  return {
+    reqId: reqId,
+    deviceHash: userAgent && hasPepper ? Utils.hashDevice(userAgent) : '',
+    deviceSupplied: Boolean(userAgent)
   };
-
-  switch (action) {
-    // Auth
-    case 'auth.validateSession':
-      return session;
-    case 'auth.changePassword':
-      return Auth.changePassword(actor.employeeId, payload.currentPassword, payload.newPassword);
-    case 'auth.logout':
-      return Auth.logout(token);
-    case 'auth.logoutAll':
-      return Auth.logoutAll(actor.employeeId);
-
-    // Profile
-    case 'profile.get':
-      return Employees.getEmployee(actor.employeeId, actor);
-
-    // Organization
-    case 'org.get':
-      return Org.getOrgHierarchy();
-    case 'org.saveDepartment':
-      return Org.saveDepartment(payload, actor);
-    case 'org.saveDesignation':
-      return Org.saveDesignation(payload, actor);
-    case 'org.saveBranch':
-      return Org.saveBranch(payload, actor);
-    case 'org.saveSite':
-      return Org.saveSite(payload, actor);
-
-    // Employees
-    case 'employee.list':
-      return Employees.listEmployees(actor, payload.filters);
-    case 'employee.get':
-      return Employees.getEmployee(payload.employeeId, actor);
-    case 'employee.save':
-      return Employees.saveEmployee(payload, actor);
-    case 'employee.deactivate':
-      return Employees.deactivateEmployee(payload.employeeId, payload.reason, actor);
-
-    // Attendance
-    case 'attendance.checkIn':
-      return Attendance.checkIn(payload, actor);
-    case 'attendance.checkOut':
-      return Attendance.checkOut(payload, actor);
-    case 'attendance.getMyLog':
-      return Attendance.getMyLog(payload.employeeId || actor.employeeId, payload.monthYear, actor);
-    case 'attendance.regularize':
-      return Attendance.regularize(payload, actor);
-
-    // Leave
-    case 'leave.getTypes':
-      return Leave.getLeaveTypes();
-    case 'leave.getMyBalances':
-      return Leave.getMyBalances(payload.employeeId || actor.employeeId);
-    case 'leave.apply':
-      return Leave.applyLeave(payload, actor);
-    case 'leave.getTeamCalendar':
-      return Leave.getTeamCalendar(payload.monthYear, actor);
-
-    // Payroll
-    case 'payroll.prepareRun':
-      return Payroll.prepareRun(payload.monthYear, actor);
-    case 'payroll.verifyRun':
-      return Payroll.verifyRun(payload.runId, actor);
-    case 'payroll.approveRun':
-      return Payroll.approveRun(payload.runId, actor);
-    case 'payroll.releaseRun':
-      return Payroll.releaseRun(payload.runId, actor);
-    case 'payroll.exportBankCsv':
-      return Payroll.exportBankCsv(payload.runId, actor);
-
-    // Workflow & Approval Inbox
-    case 'workflow.inbox':
-      return Workflow.getPendingApprovals(actor);
-    case 'workflow.action':
-      return Workflow.handleAction(payload, actor);
-
-    // Expenses & Loans
-    case 'expenses.list':
-      return Expenses.listExpenses(actor);
-    case 'expenses.apply':
-      return Expenses.applyExpense(payload, actor);
-
-    // Documents
-    case 'documents.list':
-      return Documents.listDocuments(actor);
-    case 'documents.getTemplates':
-      return Documents.getTemplates();
-    case 'documents.generate':
-      return Documents.generateDocument(payload.templateCode, payload.targetEmployeeId, actor);
-
-    // Reports
-    case 'reports.musterRoll':
-      return Reports.getMusterRoll(payload.monthYear, actor);
-    case 'reports.headcount':
-      return Reports.getHeadcount(actor);
-
-    // Settings, Roles & Security
-    case 'settings.get':
-      return Settings.getSystemSettings(actor);
-    case 'settings.save':
-      return Settings.saveSystemSetting(payload.key, payload.value, payload.category, actor);
-    case 'roles.list':
-      return Settings.getRoles(actor);
-    case 'roles.save':
-      return Settings.saveRole(payload, actor);
-    case 'roles.assign':
-      return Settings.assignUserRole(payload.employeeId, payload.roleId, actor);
-    case 'permissions.getCatalog':
-      return Settings.getPermissionsCatalog(actor);
-
-    // Backup
-    case 'backup.create':
-      return Backup.createBackup(actor);
-    case 'backup.list':
-      return Backup.listBackups(actor);
-
-    // Tests runner
-    case 'tests.run':
-      if (!actor.isSuperAdmin) throw { code: 'FORBIDDEN', message: 'Only Super Admin can execute self-tests.' };
-      return runAllSystemTests();
-
-    default:
-      throw { code: 'NOT_FOUND', message: 'API action "' + action + '" is not recognized.' };
-  }
 }
 
-function handlePublicConfig() {
-  var settings = Database.getAllCached('Company_Settings');
+function actionRegistry() {
+  return {
+    'public.config': {
+      isPublic: true, write: false, permission: null, fields: [], featureKey: null,
+      handler: function () { return publicConfig(); }
+    },
+    'auth.login': {
+      isPublic: true, write: true, permission: null, fields: [], featureKey: null,
+      handler: function (payload, authentication, context) { return Auth.login(payload, context); }
+    },
+    'auth.session': {
+      write: false, permission: null, fields: [], featureKey: null, allowPasswordChange: true,
+      handler: function (payload, authentication) { return Auth.sessionResponse(authentication); }
+    },
+    'auth.changePassword': {
+      write: true, permission: null, fields: [], featureKey: null, allowPasswordChange: true,
+      handler: function (payload, authentication, context) { return Auth.changePassword(authentication, payload, context); }
+    },
+    'auth.logout': {
+      write: true, permission: null, fields: [], featureKey: null, allowPasswordChange: true,
+      handler: function (payload, authentication, context) { return Auth.logout(authentication, context); }
+    },
+    'auth.logoutAll': {
+      write: true, permission: null, fields: [], featureKey: null, allowPasswordChange: true,
+      handler: function (payload, authentication, context) { return Auth.logoutAll(authentication, context); }
+    },
+    'auth.updatePreferences': {
+      write: true, permission: null, fields: [], featureKey: null, allowPasswordChange: true,
+      handler: function (payload, authentication, context) { return Auth.updatePreferences(authentication, payload, context); }
+    },
+    'dashboard.get': {
+      write: false, permission: null, fields: [], featureKey: null,
+      handler: function (payload, authentication) { return dashboardData(authentication); }
+    },
+    'profile.get': {
+      write: false, permission: 'employee.view', fields: [], featureKey: null, entity: 'Employees',
+      resolveTarget: function (payload, authentication) {
+        var requestedId = payload.employeeId ? Utils.normalizeEmployeeId(payload.employeeId) : authentication.actor.employeeId;
+        var employees = Database.getAllCached('Employees');
+        for (var i = 0; i < employees.length; i++) {
+          if (String(employees[i].employee_id || employees[i].id) === requestedId) return employees[i];
+        }
+        Utils.fail('NOT_FOUND', 'Employee record not found.');
+      },
+      handler: function (payload, authentication, context, target) { return profileData(target); }
+    }
+  };
+}
+
+function dispatchAction(action, token, payload, context) {
+  var definitions = actionRegistry();
+  var definition = definitions[action];
+  if (!definition) Utils.fail('NOT_FOUND', 'The requested API action does not exist.');
+
+  var authentication = null;
+  var target = null;
+  if (!definition.isPublic) {
+    authentication = Auth.authenticate(token, context);
+    if (authentication.actor.mustChangePassword && !definition.allowPasswordChange) {
+      Utils.fail('FORBIDDEN', 'A password change is required before using this action.');
+    }
+    if (definition.resolveTarget) target = definition.resolveTarget(payload, authentication);
+    if (definition.permission) {
+      Permissions.check(authentication.actor, definition.permission, target, {
+        entity: definition.entity,
+        fields: definition.fields,
+        write: definition.write,
+        featureKey: definition.featureKey,
+        makerChecker: Boolean(definition.makerChecker),
+        condition: definition.condition ? definition.condition(payload, target) : {},
+        context: context
+      });
+    } else if (definition.featureKey && !Permissions.isFeatureEnabled(definition.featureKey)) {
+      Utils.fail('FORBIDDEN', 'This feature is disabled.');
+    }
+  }
+  return definition.handler(payload, authentication, context, target);
+}
+
+function publicConfig() {
   var config = {
     companyName: 'FOCUSON HRMS',
-    tagline: 'Enterprise HR & Payroll Management',
-    logoUrl: './assets/icons/icon-192.svg',
+    tagline: '',
+    logoUrl: '',
     loginNotice: '',
+    featureHighlights: [],
     defaultLanguage: 'en',
     defaultTheme: 'light',
-    themeTokens: null
+    themeTokens: {
+      primaryColor: '#3157d5', accentColor: '#08756f', cornerRadius: 18,
+      cardStyle: 'soft', density: 'comfortable', font: 'system'
+    },
+    background: { type: 'gradient', preset: 'astra', overlayOpacity: 0, blur: 0 }
   };
-
-  for (var i = 0; i < settings.length; i++) {
-    var k = settings[i].setting_key;
-    var v = settings[i].setting_value;
-    if (k === 'COMPANY_NAME' && v) config.companyName = v;
-    if (k === 'COMPANY_TAGLINE' && v) config.tagline = v;
-    if (k === 'COMPANY_LOGO_URL' && v) config.logoUrl = v;
-    if (k === 'LOGIN_NOTICE' && v) config.loginNotice = v;
-    if (k === 'DEFAULT_LANGUAGE' && v) config.defaultLanguage = v;
-    if (k === 'DEFAULT_THEME' && v) config.defaultTheme = v;
+  if (!PropertiesService.getScriptProperties().getProperty('HRMS_CORE_DB_ID')) return config;
+  var settings = Database.getSettingsMap();
+  function text(key, maximum) {
+    return settings[key] ? Utils.cleanString(settings[key]).slice(0, maximum) : '';
   }
+  config.companyName = text('COMPANY_NAME', 120) || config.companyName;
+  config.tagline = text('COMPANY_TAGLINE', 240);
+  config.logoUrl = text('COMPANY_LOGO_URL', 2048);
+  config.loginNotice = text('LOGIN_NOTICE', 1000);
+  config.defaultLanguage = ['en', 'hi'].indexOf(settings.DEFAULT_LANGUAGE) >= 0 ? settings.DEFAULT_LANGUAGE : 'en';
+  config.defaultTheme = ['light', 'dark'].indexOf(settings.DEFAULT_THEME) >= 0 ? settings.DEFAULT_THEME : 'light';
 
+  var highlights = Utils.safeParseJson(settings.PUBLIC_FEATURE_HIGHLIGHTS, []);
+  if (Array.isArray(highlights)) {
+    config.featureHighlights = highlights.slice(0, 4).filter(function (item) { return typeof item === 'string'; }).map(function (item) {
+      return Utils.cleanString(item).slice(0, 160);
+    }).filter(Boolean);
+  }
+  if (/^#[0-9a-fA-F]{6}$/.test(settings.BRAND_PRIMARY_COLOR || '')) config.themeTokens.primaryColor = settings.BRAND_PRIMARY_COLOR;
+  if (/^#[0-9a-fA-F]{6}$/.test(settings.BRAND_ACCENT_COLOR || '')) config.themeTokens.accentColor = settings.BRAND_ACCENT_COLOR;
+  var radius = Utils.asNumber(settings.BRAND_CORNER_RADIUS, 18);
+  config.themeTokens.cornerRadius = Math.min(24, Math.max(8, radius));
+  if (['flat', 'soft', 'glass'].indexOf(settings.BRAND_CARD_STYLE) >= 0) config.themeTokens.cardStyle = settings.BRAND_CARD_STYLE;
+  if (['comfortable', 'compact'].indexOf(settings.BRAND_DENSITY) >= 0) config.themeTokens.density = settings.BRAND_DENSITY;
+  if (['system', 'humanist', 'readable'].indexOf(settings.BRAND_FONT) >= 0) config.themeTokens.font = settings.BRAND_FONT;
+  if (['solid', 'gradient', 'animated'].indexOf(settings.LOGIN_BACKGROUND_TYPE) >= 0) config.background.type = settings.LOGIN_BACKGROUND_TYPE;
+  if (['astra', 'dawn', 'mono'].indexOf(settings.LOGIN_BACKGROUND_PRESET) >= 0) config.background.preset = settings.LOGIN_BACKGROUND_PRESET;
+  config.background.overlayOpacity = Math.min(0.9, Math.max(0, Utils.asNumber(settings.LOGIN_BACKGROUND_OVERLAY_OPACITY, 0)));
+  config.background.blur = Math.min(20, Math.max(0, Utils.asNumber(settings.LOGIN_BACKGROUND_BLUR, 0)));
   return config;
+}
+
+function dashboardData(authentication) {
+  var employee = authentication.employee;
+  return {
+    user: {
+      employeeId: authentication.actor.employeeId,
+      displayName: employee.display_name || authentication.actor.employeeId,
+      department: employee.department || '',
+      designation: employee.designation || '',
+      branch: employee.branch || ''
+    },
+    security: {
+      passwordChangedAt: Utils.toIso(authentication.user.password_changed_at),
+      permissionCount: authentication.effective.permissions.length
+    },
+    session: {
+      absoluteExpiresAt: Utils.toIso(authentication.sessionRecord.expires_at),
+      lastSeenAt: Utils.toIso(authentication.sessionRecord.last_seen_at)
+    }
+  };
+}
+
+function profileData(employee) {
+  return {
+    profile: {
+      employeeId: String(employee.employee_id || employee.id),
+      displayName: employee.display_name || '',
+      workEmail: employee.work_email || '',
+      mobile: employee.mobile || '',
+      department: employee.department || '',
+      designation: employee.designation || '',
+      branch: employee.branch || '',
+      reportingManagerId: employee.reporting_manager_id || '',
+      workLocationType: employee.work_location_type || '',
+      joiningDate: employee.joining_date || ''
+    }
+  };
 }

@@ -1,55 +1,27 @@
 /**
- * FOCUSON HRMS - Audit Logging Engine (Google Apps Script)
- * Immutably records security events, login attempts, sensitive field views, approvals, and role updates.
+ * Append-only application audit trail. The Sheets tab is protected by Setup;
+ * details are redacted before storage and no request credentials are accepted.
  */
-
-var Audit = (function() {
-  /**
-   * Logs a security or operational event to Audit_Logs.
-   */
-  function logEvent(action, actorId, targetEntity, targetId, status, details, clientMeta) {
-    try {
-      clientMeta = clientMeta || {};
-      var now = Utils.nowIso();
-      var record = {
-        id: 'aud_' + Utilities.getUuid().replace(/-/g, '').substring(0, 18),
-        created_at: now,
-        updated_at: now,
-        created_by: actorId || 'SYSTEM',
-        updated_by: actorId || 'SYSTEM',
-        status: status || 'SUCCESS',
-        action: action,
-        actor_id: actorId || 'ANONYMOUS',
-        target_entity: targetEntity || '',
-        target_id: targetId || '',
-        ip_hash: clientMeta.ipHash || '',
-        user_agent_hash: clientMeta.uaHash || '',
-        details_json: typeof details === 'string' ? details : JSON.stringify(details || {})
-      };
-
-      // Append directly without waiting on general lock
-      var sheet = Database.getSheet('Audit_Logs');
-      if (sheet) {
-        var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-        var row = [];
-        for (var i = 0; i < headers.length; i++) {
-          var h = headers[i];
-          row.push(Utils.sanitizeForSheet(record[h] !== undefined ? record[h] : ''));
-        }
-        sheet.appendRow(row);
-      }
-    } catch (err) {
-      console.error('Failed to write audit log:', err);
-    }
+var Audit = (function () {
+  function logEvent(eventType, actorId, targetEntity, targetId, outcome, details, context) {
+    context = context || {};
+    var record = {
+      event_type: String(eventType).slice(0, 120),
+      actor_id: String(actorId || 'ANONYMOUS').slice(0, 64),
+      target_entity: String(targetEntity || '').slice(0, 100),
+      target_id: String(targetId || '').slice(0, 128),
+      outcome: String(outcome || 'SUCCESS').slice(0, 40),
+      req_id: String(context.reqId || '').slice(0, 128),
+      device_hash: String(context.deviceHash || '').slice(0, 128),
+      details_json: JSON.stringify(Utils.safeAuditDetails(details || {}))
+    };
+    return Database.insert('Audit_Logs', record, actorId || 'SYSTEM');
   }
 
-  /**
-   * Specialized audit helper for sensitive data views (salary, bank details, govt IDs).
-   */
-  function logSensitiveAccess(actorId, fieldName, targetEmployeeId, clientMeta) {
-    logEvent('SENSITIVE_FIELD_VIEW', actorId, 'Employees', targetEmployeeId, 'ACCESSED', {
-      field: fieldName
-    }, clientMeta);
+  function logSensitiveAccess(actorId, fieldName, targetEmployeeId, context) {
+    return logEvent('SENSITIVE_FIELD_VIEW', actorId, 'Employees', targetEmployeeId, 'SUCCESS', {
+      fields: Array.isArray(fieldName) ? fieldName : [fieldName]
+    }, context);
   }
 
   return {

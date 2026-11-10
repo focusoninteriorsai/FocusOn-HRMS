@@ -1,82 +1,55 @@
-// FOCUSON HRMS - Static Shell Service Worker
-// Strictly caches static UI assets only; NEVER caches API calls, personal data or credentials.
-
-const CACHE_NAME = 'focuson-hrms-v1';
-const STATIC_ASSETS = [
-  './',
-  './index.html',
-  './404.html',
-  './manifest.webmanifest',
-  './assets/css/tokens.css',
-  './assets/css/base.css',
-  './assets/css/components.css',
-  './assets/css/animations.css',
-  './assets/css/pages.css',
-  './assets/js/config.js',
-  './assets/js/api.js',
-  './assets/js/auth.js',
-  './assets/js/store.js',
-  './assets/js/router.js',
-  './assets/js/i18n.js',
-  './assets/js/theme.js',
-  './assets/js/ui.js',
-  './assets/js/app.js',
-  './assets/i18n/en.json',
-  './assets/i18n/hi.json',
-  './assets/icons/icon-192.svg',
-  './assets/icons/icon-512.svg'
+const CACHE_NAME = 'focuson-shell-phase1-v1';
+const SHELL_FILES = [
+  './index.html', './404.html', './manifest.webmanifest',
+  './assets/css/tokens.css', './assets/css/base.css', './assets/css/components.css',
+  './assets/css/animations.css', './assets/css/pages.css',
+  './assets/js/config.js', './assets/js/api.js', './assets/js/auth.js', './assets/js/store.js',
+  './assets/js/router.js', './assets/js/i18n.js', './assets/js/theme.js', './assets/js/ui.js',
+  './assets/js/app.js', './assets/js/geo.js', './assets/js/camera.js',
+  './assets/js/pages/dashboard.js', './assets/js/pages/profile.js',
+  './assets/js/pages/change-password.js', './assets/js/pages/error.js',
+  './assets/i18n/en.json', './assets/i18n/hi.json',
+  './assets/icons/icon-192.svg', './assets/icons/icon-512.svg'
 ];
+const SHELL_URLS = new Set(SHELL_FILES.map((path) => new URL(path, self.registration.scope).href));
+const INDEX_URL = new URL('./index.html', self.registration.scope).href;
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch((err) => {
-        console.warn('Pre-caching some assets failed:', err);
-      });
-    })
-  );
-  self.skipWaiting();
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)));
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
 
-  // NEVER cache or intercept Apps Script API calls, external API calls, or POST requests
-  if (
-    event.request.method !== 'GET' ||
-    url.hostname.includes('script.google.com') ||
-    url.hostname.includes('script.googleusercontent.com')
-  ) {
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request).catch(() => caches.match(INDEX_URL))
+    );
     return;
   }
+  if (!SHELL_URLS.has(url.href)) return;
 
-  // Stale-while-revalidate for static local assets
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const responseToCache = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
-          }
-          return networkResponse;
-        })
-        .catch(() => cachedResponse);
-
-      return cachedResponse || fetchPromise;
+    caches.match(request).then((cached) => {
+      const network = fetch(request).then((response) => {
+        if (response.ok && response.type === 'basic') {
+          const copy = response.clone();
+          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
+        }
+        return response;
+      });
+      return cached || network;
     })
   );
 });

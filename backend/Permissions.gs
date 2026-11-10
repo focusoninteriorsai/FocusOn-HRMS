@@ -1,296 +1,313 @@
 /**
- * FOCUSON HRMS - Access Control Engine (Google Apps Script)
- * Implements strict 9-step evaluation order: Default Deny, Explicit DENY beats ALLOW,
- * recursive team downlines, field masking, and maker-checker segregation of duties.
+ * Default-deny authorization engine. Role, scope, condition, override and
+ * delegation definitions are data; only the built-in Super Admin role is code.
  */
+var Permissions = (function () {
+  var VALID_SCOPES = ['Self', 'Direct reports', 'Team', 'Department', 'Branch', 'Company', 'Custom list'];
+  var FIELD_RULES = {
+    ctc_annual: 'field.salary.view', basic_salary: 'field.salary.view', gross_salary: 'field.salary.view',
+    bank_account_number: 'field.bank.view', bank_ifsc: 'field.bank.view', bank_name: 'field.bank.view',
+    pan_number: 'field.govtid.view', aadhaar_number: 'field.govtid.view', pf_uan: 'field.govtid.view', esi_number: 'field.govtid.view',
+    medical_notes: 'field.medical.view', blood_group: 'field.medical.view'
+  };
 
-var Permissions = (function() {
-  /**
-   * Resolves effective permissions for a user:
-   * Union of assigned roles + active ALLOW overrides + active delegations,
-   * minus explicit DENY overrides.
-   */
-  function resolveEffectivePermissions(employeeId) {
-    if (!employeeId) return { permissions: [], isSuperAdmin: false, roleIds: [] };
-
-    // Check user active status
-    var users = Database.getAllCached('Users');
-    var user = null;
-    for (var u = 0; u < users.length; u++) {
-      if (users[u].employee_id === employeeId && users[u].status === 'ACTIVE') {
-        user = users[u];
-        break;
-      }
-    }
-    if (!user) return { permissions: [], isSuperAdmin: false, roleIds: [] };
-
-    // Check Super Admin flag
-    var isSuperAdmin = (user.is_super_admin === true || String(user.is_super_admin).toLowerCase() === 'true');
-
-    // 1. Get assigned active roles
-    var userRoles = Database.getAllCached('User_Role_Map');
-    var activeRoleIds = [];
-    for (var r = 0; r < userRoles.length; r++) {
-      if (userRoles[r].employee_id === employeeId && userRoles[r].status === 'ACTIVE') {
-        activeRoleIds.push(userRoles[r].role_id);
-      }
-    }
-
-    // 2. Fetch role permissions
-    var rolePermissions = Database.getAllCached('Role_Permissions');
-    var grantedPermissions = new Set();
-    for (var rp = 0; rp < rolePermissions.length; rp++) {
-      if (activeRoleIds.indexOf(rolePermissions[rp].role_id) !== -1 && rolePermissions[rp].status === 'ACTIVE') {
-        grantedPermissions.add(rolePermissions[rp].permission_key);
-      }
-    }
-
-    // 3. Add active delegations where this user is the delegate
-    var nowIso = Utils.nowIso();
-    var delegations = Database.getAllCached('Delegations');
-    for (var d = 0; d < delegations.length; d++) {
-      var del = delegations[d];
-      if (del.delegate_employee_id === employeeId && del.status === 'ACTIVE') {
-        if (del.start_date <= nowIso && del.end_date >= nowIso) {
-          if (del.permissions_csv) {
-            var delKeys = del.permissions_csv.split(',');
-            for (var k = 0; k < delKeys.length; k++) {
-              grantedPermissions.add(delKeys[k].trim());
-            }
-          }
-        }
-      }
-    }
-
-    // 4. Process User Overrides (ALLOW & DENY)
-    var overrides = Database.getAllCached('User_Permission_Overrides');
-    var denyOverrides = new Set();
-    var allowOverrides = new Set();
-
-    for (var o = 0; o < overrides.length; o++) {
-      var ov = overrides[o];
-      if (ov.employee_id === employeeId && ov.status === 'ACTIVE') {
-        // Check override expiry
-        if (!ov.expiry_date || ov.expiry_date >= nowIso) {
-          if (ov.effect === 'DENY') {
-            denyOverrides.add(ov.permission_key);
-          } else if (ov.effect === 'ALLOW') {
-            allowOverrides.add(ov.permission_key);
-          }
-        }
-      }
-    }
-
-    // Merge ALLOW overrides
-    allowOverrides.forEach(function(perm) {
-      grantedPermissions.add(perm);
-    });
-
-    // Remove explicit DENY overrides (Deny beats allow)
-    denyOverrides.forEach(function(perm) {
-      grantedPermissions.delete(perm);
-    });
-
-    return {
-      permissions: Array.from(grantedPermissions),
-      isSuperAdmin: isSuperAdmin,
-      roleIds: activeRoleIds,
-      denyOverrides: Array.from(denyOverrides)
-    };
-  }
-
-  /**
-   * Resolves reporting downline recursively for a manager.
-   */
-  function getDownlineEmployeeIds(managerEmpId) {
-    var employees = Database.getAllCached('Employees');
-    var downline = new Set();
-    var queue = [managerEmpId];
-
-    while (queue.length > 0) {
-      var currentMgr = queue.shift();
-      for (var i = 0; i < employees.length; i++) {
-        var emp = employees[i];
-        if (emp.reporting_manager_id === currentMgr && emp.status === 'ACTIVE') {
-          if (!downline.has(emp.id)) {
-            downline.add(emp.id);
-            queue.push(emp.id);
-          }
-        }
-      }
-    }
-
-    return downline;
-  }
-
-  /**
-   * Evaluates if the actor is within the permitted scope for the target record.
-   * Scopes: 'Self', 'Direct reports', 'Team', 'Department', 'Branch', 'Company', 'Custom list'.
-   */
-  function evaluateScope(actor, scopeType, targetRecord) {
-    if (!scopeType || scopeType === 'Company') return true;
-    if (actor.isSuperAdmin) return true;
-    if (!targetRecord) return true;
-
-    var targetEmpId = targetRecord.employee_id || targetRecord.id;
-
-    if (scopeType === 'Self') {
-      return targetEmpId === actor.employeeId;
-    }
-
-    if (scopeType === 'Direct reports') {
-      var employees = Database.getAllCached('Employees');
-      for (var i = 0; i < employees.length; i++) {
-        if (employees[i].id === targetEmpId && employees[i].reporting_manager_id === actor.employeeId) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    if (scopeType === 'Team') {
-      var downline = getDownlineEmployeeIds(actor.employeeId);
-      return downline.has(targetEmpId) || targetEmpId === actor.employeeId;
-    }
-
-    if (scopeType === 'Department') {
-      return targetRecord.department_id === actor.departmentId || targetRecord.department === actor.department;
-    }
-
-    if (scopeType === 'Branch') {
-      return targetRecord.branch_id === actor.branchId || targetRecord.branch === actor.branch;
-    }
-
-    return false;
-  }
-
-  /**
-   * Checks whether a feature switch is active.
-   */
-  function isFeatureEnabled(featureKey) {
-    var flags = Database.getAllCached('Feature_Flags');
-    for (var i = 0; i < flags.length; i++) {
-      if (flags[i].feature_key === featureKey) {
-        return flags[i].enabled === true || String(flags[i].enabled).toLowerCase() === 'true';
-      }
-    }
-    return true; // Default enabled unless explicitly disabled
-  }
-
-  /**
-   * The Master 9-Step Evaluation Engine.
-   * Throws typed error on denial; returns true on pass.
-   */
-  function check(actor, permissionKey, targetRecord, options) {
-    options = options || {};
-
-    // Step 1: Session valid & user active
-    if (!actor || !actor.employeeId) {
-      throw { code: 'AUTH_REQUIRED', message: 'Valid authentication session required.' };
-    }
-
-    // Super Admin bypasses normal catalog checks, but still subject to maker-checker SoD
-    if (actor.isSuperAdmin) {
-      if (options.makerCheckerTarget) {
-        if (options.makerCheckerTarget.prepared_by === actor.employeeId) {
-          throw { code: 'FORBIDDEN', message: 'Segregation of duties: The person who prepared cannot verify or approve the same record.' };
-        }
-      }
-      return true;
-    }
-
-    var effective = resolveEffectivePermissions(actor.employeeId);
-
-    // Step 2: Explicit DENY override check
-    if (effective.denyOverrides && effective.denyOverrides.indexOf(permissionKey) !== -1) {
-      Audit.logEvent('ACCESS_DENIED_EXPLICIT_DENY', actor.employeeId, options.entity || '', targetRecord ? targetRecord.id : '', 'DENIED', { permission: permissionKey });
-      throw { code: 'FORBIDDEN', message: 'Access denied by explicit policy override.' };
-    }
-
-    // Step 3 & 4: Permission key presence in effective permissions
-    if (effective.permissions.indexOf(permissionKey) === -1) {
-      Audit.logEvent('ACCESS_DENIED_MISSING_PERMISSION', actor.employeeId, options.entity || '', targetRecord ? targetRecord.id : '', 'DENIED', { permission: permissionKey });
-      throw { code: 'FORBIDDEN', message: 'Permission ' + permissionKey + ' not granted.' };
-    }
-
-    // Step 5: Scope check
-    var scopeType = options.scope || 'Company';
-    if (!evaluateScope(actor, scopeType, targetRecord)) {
-      Audit.logEvent('ACCESS_DENIED_OUT_OF_SCOPE', actor.employeeId, options.entity || '', targetRecord ? targetRecord.id : '', 'DENIED', { permission: permissionKey, scope: scopeType });
-      throw { code: 'FORBIDDEN', message: 'Record is outside your permitted access scope (' + scopeType + ').' };
-    }
-
-    // Step 6: Feature-switch check
-    if (options.featureKey && !isFeatureEnabled(options.featureKey)) {
-      throw { code: 'FORBIDDEN', message: 'Feature is currently disabled in system settings.' };
-    }
-
-    // Step 7: Maker-Checker / Segregation of Duties check
-    if (options.makerCheckerTarget) {
-      var preparer = options.makerCheckerTarget.prepared_by || options.makerCheckerTarget.created_by;
-      if (preparer === actor.employeeId) {
-        Audit.logEvent('ACCESS_DENIED_MAKER_CHECKER', actor.employeeId, options.entity || '', targetRecord ? targetRecord.id : '', 'DENIED', { rule: 'Maker cannot approve' });
-        throw { code: 'FORBIDDEN', message: 'Segregation of duties violation: You cannot verify or approve a record you prepared.' };
-      }
-    }
-
-    // Step 8: Condition check (e.g. max approval amount)
-    if (options.amount && options.maxAllowedAmount && options.amount > options.maxAllowedAmount) {
-      throw { code: 'FORBIDDEN', message: 'Approval amount exceeds your configured ceiling limit.' };
-    }
-
+  function activeAt(row, now, startKey, endKey) {
+    if (String(row.status).toUpperCase() !== 'ACTIVE') return false;
+    var start = row[startKey || 'valid_from'];
+    var end = row[endKey || 'valid_until'];
+    if (start && Utils.toIso(start) > now) return false;
+    if (end && Utils.toIso(end) <= now) return false;
     return true;
   }
 
-  /**
-   * Field-level protection: Masks sensitive fields (salary, bank, tax IDs)
-   * if the actor lacks the corresponding view permission.
-   */
-  function maskSensitiveFields(employeeRecord, actor) {
-    if (!employeeRecord) return employeeRecord;
-    var sanitized = Object.assign({}, employeeRecord);
+  function parseConditions(value) {
+    var parsed = Utils.safeParseJson(value, {});
+    return parsed && !Array.isArray(parsed) && typeof parsed === 'object' ? parsed : {};
+  }
 
-    var hasSalaryView = actor.isSuperAdmin || (actor.permissions && actor.permissions.indexOf('field.salary.view') !== -1);
-    var hasBankView = actor.isSuperAdmin || (actor.permissions && actor.permissions.indexOf('field.bank.view') !== -1);
-    var hasGovtIdView = actor.isSuperAdmin || (actor.permissions && actor.permissions.indexOf('field.govtid.view') !== -1);
-    var hasMedicalView = actor.isSuperAdmin || (actor.permissions && actor.permissions.indexOf('field.medical.view') !== -1);
+  function resolveEffectivePermissions(employeeId) {
+    var now = Utils.nowIso();
+    var roles = Database.getAllCached('Roles');
+    var roleById = {};
+    roles.forEach(function (role) {
+      if (String(role.status).toUpperCase() === 'ACTIVE') roleById[role.id] = role;
+    });
 
-    if (!hasSalaryView) {
-      delete sanitized.ctc_annual;
-      delete sanitized.basic_salary;
-      delete sanitized.gross_salary;
-      sanitized.salary_masked = true;
-    } else {
-      Audit.logSensitiveAccess(actor.employeeId, 'salary', sanitized.id);
-    }
+    var roleIds = [];
+    var isSuperAdmin = false;
+    Database.getAllCached('User_Role_Map').forEach(function (mapping) {
+      if (mapping.employee_id !== employeeId || !activeAt(mapping, now, 'valid_from', 'valid_until')) return;
+      var role = roleById[mapping.role_id];
+      if (!role) return;
+      roleIds.push(role.id);
+      if (role.role_code === 'SUPER_ADMIN' && Utils.asBoolean(role.built_in)) isSuperAdmin = true;
+    });
 
-    if (!hasBankView) {
-      if (sanitized.bank_account_number) {
-        var str = String(sanitized.bank_account_number);
-        sanitized.bank_account_number = '••••••••' + str.slice(-4);
+    var grants = [];
+    Database.getAllCached('Role_Permissions').forEach(function (grant) {
+      if (String(grant.status).toUpperCase() !== 'ACTIVE' || roleIds.indexOf(grant.role_id) < 0) return;
+      var role = roleById[grant.role_id];
+      grants.push({
+        key: grant.permission_key,
+        scope: VALID_SCOPES.indexOf(role.scope_type) >= 0 ? role.scope_type : 'Self',
+        conditions: mergeConditions(parseConditions(role.conditions_json), parseConditions(grant.conditions_json)),
+        source: 'ROLE', sourceId: role.id
+      });
+    });
+
+    var denyOverrides = [];
+    Database.getAllCached('User_Permission_Overrides').forEach(function (override) {
+      if (override.employee_id !== employeeId || String(override.status).toUpperCase() !== 'ACTIVE') return;
+      if (!override.expires_at || Utils.toIso(override.expires_at) <= now || !override.reason) return;
+      if (override.effect === 'DENY') {
+        denyOverrides.push(override.permission_key);
+      } else if (override.effect === 'ALLOW') {
+        grants.push({
+          key: override.permission_key,
+          scope: VALID_SCOPES.indexOf(override.scope_type) >= 0 ? override.scope_type : 'Self',
+          conditions: parseConditions(override.conditions_json),
+          source: 'OVERRIDE', sourceId: override.id
+        });
       }
-      delete sanitized.bank_ifsc;
+    });
+
+    if (isSuperAdmin) {
+      Database.getAllCached('Permissions_Catalog').forEach(function (permission) {
+        if (String(permission.status).toUpperCase() === 'ACTIVE' && denyOverrides.indexOf(permission.permission_key) < 0) {
+          grants.push({ key: permission.permission_key, scope: 'Company', conditions: {}, source: 'SUPER_ADMIN', sourceId: 'role_super_admin' });
+        }
+      });
+    }
+
+    Database.getAllCached('Delegations').forEach(function (delegation) {
+      if (delegation.delegate_employee_id !== employeeId || !activeAt(delegation, now, 'starts_at', 'ends_at')) return;
+      var delegated = Utils.safeParseJson(delegation.permissions_json, []);
+      if (!Array.isArray(delegated)) return;
+      delegated.forEach(function (entry) {
+        var key = typeof entry === 'string' ? entry : entry.permissionKey;
+        if (!key) return;
+        var entryScope = typeof entry === 'object' && VALID_SCOPES.indexOf(entry.scope) >= 0 ? entry.scope : delegation.scope_type;
+        grants.push({
+          key: key,
+          scope: VALID_SCOPES.indexOf(entryScope) >= 0 ? entryScope : 'Self',
+          conditions: typeof entry === 'object' ? parseConditions(JSON.stringify(entry.conditions || {})) : {},
+          source: 'DELEGATION', sourceId: delegation.id
+        });
+      });
+    });
+
+    grants = grants.filter(function (grant) { return denyOverrides.indexOf(grant.key) < 0; });
+    var permissions = Utils.csvUnique(grants.map(function (grant) { return grant.key; }));
+    var scopes = {};
+    permissions.forEach(function (key) {
+      scopes[key] = Utils.csvUnique(grants.filter(function (grant) { return grant.key === key; }).map(function (grant) { return grant.scope; }));
+    });
+    return {
+      permissions: permissions,
+      scopes: scopes,
+      grants: grants,
+      isSuperAdmin: isSuperAdmin,
+      roleIds: Utils.csvUnique(roleIds),
+      denyOverrides: Utils.csvUnique(denyOverrides)
+    };
+  }
+
+  function mergeConditions(roleConditions, grantConditions) {
+    var merged = {};
+    Object.keys(roleConditions).forEach(function (key) { merged[key] = roleConditions[key]; });
+    Object.keys(grantConditions).forEach(function (key) {
+      if (key === 'amount_max' || key === 'days_max') {
+        var left = Number(merged[key]);
+        var right = Number(grantConditions[key]);
+        merged[key] = merged[key] === undefined ? right : Math.min(left, right);
+      } else {
+        merged[key] = grantConditions[key];
+      }
+    });
+    return merged;
+  }
+
+  function employeeKey(employee) {
+    return String(employee.employee_id || employee.id || '');
+  }
+
+  function getDownlineEmployeeIds(managerEmployeeId) {
+    var employees = Database.getAllCached('Employees');
+    var visited = {};
+    var downline = [];
+    var queue = [managerEmployeeId];
+    visited[managerEmployeeId] = true;
+    while (queue.length) {
+      var manager = queue.shift();
+      employees.forEach(function (employee) {
+        var id = employeeKey(employee);
+        if (String(employee.status).toUpperCase() === 'ACTIVE' && employee.reporting_manager_id === manager && !visited[id]) {
+          visited[id] = true;
+          downline.push(id);
+          queue.push(id);
+        }
+      });
+    }
+    return downline;
+  }
+
+  function targetEmployeeId(targetRecord) {
+    if (!targetRecord) return '';
+    return String(targetRecord.employee_id || targetRecord.requester_employee_id || targetRecord.id || '');
+  }
+
+  function evaluateScope(actor, scopeType, targetRecord, conditions) {
+    if (scopeType === 'Company') return true;
+    if (!targetRecord) return false;
+    var targetId = targetEmployeeId(targetRecord);
+    if (scopeType === 'Self') return targetId === actor.employeeId;
+    if (scopeType === 'Custom list') {
+      var ids = conditions && Array.isArray(conditions.employee_ids) ? conditions.employee_ids : [];
+      return ids.map(String).indexOf(targetId) >= 0;
+    }
+    var targetEmployee = null;
+    var employees = Database.getAllCached('Employees');
+    for (var i = 0; i < employees.length; i++) {
+      if (employeeKey(employees[i]) === targetId) { targetEmployee = employees[i]; break; }
+    }
+    if (scopeType === 'Direct reports') return Boolean(targetEmployee && targetEmployee.reporting_manager_id === actor.employeeId);
+    if (scopeType === 'Team') return targetId === actor.employeeId || getDownlineEmployeeIds(actor.employeeId).indexOf(targetId) >= 0;
+    if (scopeType === 'Department') {
+      return Boolean(targetEmployee && actor.departmentId && targetEmployee.department_id === actor.departmentId) ||
+        (targetRecord.department_id && targetRecord.department_id === actor.departmentId) ||
+        (targetEmployee && actor.department && targetEmployee.department === actor.department);
+    }
+    if (scopeType === 'Branch') {
+      return Boolean(targetEmployee && actor.branchId && targetEmployee.branch_id === actor.branchId) ||
+        (targetRecord.branch_id && targetRecord.branch_id === actor.branchId) ||
+        (targetEmployee && actor.branch && targetEmployee.branch === actor.branch);
+    }
+    return false;
+  }
+
+  function conditionsAllow(conditions, actual) {
+    if (!conditions || Object.keys(conditions).length === 0) return true;
+    actual = actual || {};
+    var allowed = true;
+    Object.keys(conditions).forEach(function (key) {
+      if (key === 'employee_ids') return;
+      if (key === 'amount_max') {
+        var maximum = Number(conditions[key]);
+        var amount = Number(actual.amount);
+        if (!isFinite(maximum) || maximum < 0 || actual.amount === undefined || !isFinite(amount) || amount > maximum) allowed = false;
+      } else if (key === 'days_max') {
+        var maximumDays = Number(conditions[key]);
+        var days = Number(actual.days);
+        if (!isFinite(maximumDays) || maximumDays < 0 || actual.days === undefined || !isFinite(days) || days > maximumDays) allowed = false;
+      } else if (key === 'leave_type_ids') {
+        if (!Array.isArray(conditions[key]) || conditions[key].map(String).indexOf(String(actual.leaveTypeId)) < 0) allowed = false;
+      } else {
+        allowed = false;
+      }
+    });
+    return allowed;
+  }
+
+  function isFeatureEnabled(featureKey) {
+    if (!featureKey) return true;
+    var flags = Database.getAllCached('Feature_Flags');
+    for (var i = 0; i < flags.length; i++) {
+      if (flags[i].feature_key === featureKey && String(flags[i].status).toUpperCase() === 'ACTIVE') {
+        return Utils.asBoolean(flags[i].enabled);
+      }
+    }
+    return false;
+  }
+
+  function checkFields(actor, effective, fields, write, context) {
+    (fields || []).forEach(function (field) {
+      var viewPermission = FIELD_RULES[field];
+      if (!viewPermission) return;
+      var required = write ? viewPermission.replace('.view', '.edit') : viewPermission;
+      if (!hasPermissionFromEffective(actor, effective, required)) {
+        deny(actor, required, null, { reason: 'FIELD', entity: 'Employees', context: context });
+      }
+      if (!write) Audit.logSensitiveAccess(actor.employeeId, field, actor.employeeId, context);
+    });
+  }
+
+  function hasPermissionFromEffective(actor, effective, permissionKey) {
+    if (effective.denyOverrides.indexOf(permissionKey) >= 0) return false;
+    return actor.isSuperAdmin || effective.permissions.indexOf(permissionKey) >= 0;
+  }
+
+  function deny(actor, permissionKey, targetRecord, options) {
+    options = options || {};
+    Audit.logEvent('ACCESS_DENIED', actor.employeeId, options.entity || '', targetRecord ? targetRecord.id : '', 'DENIED', {
+      permission: permissionKey,
+      stage: options.reason || 'PERMISSION'
+    }, options.context);
+    Utils.fail('FORBIDDEN', 'You do not have permission to perform this action.');
+  }
+
+  /** Implements the specified evaluation order, including Super Admin SoD. */
+  function check(actor, permissionKey, targetRecord, options) {
+    options = options || {};
+    if (!actor || !actor.sessionValidated || !actor.employeeId) Utils.fail('AUTH_REQUIRED', 'Authentication is required.');
+    var effective = resolveEffectivePermissions(actor.employeeId);
+    actor.isSuperAdmin = effective.isSuperAdmin;
+
+    if (effective.denyOverrides.indexOf(permissionKey) >= 0) deny(actor, permissionKey, targetRecord, { reason: 'EXPLICIT_DENY', entity: options.entity, context: options.context });
+
+    if (!actor.isSuperAdmin && effective.permissions.indexOf(permissionKey) < 0) {
+      deny(actor, permissionKey, targetRecord, { reason: 'PERMISSION', entity: options.entity, context: options.context });
+    }
+
+    var scopedGrants;
+    if (actor.isSuperAdmin) {
+      scopedGrants = [{ key: permissionKey, scope: 'Company', conditions: {} }];
     } else {
-      Audit.logSensitiveAccess(actor.employeeId, 'bank', sanitized.id);
+      scopedGrants = effective.grants.filter(function (grant) {
+        return grant.key === permissionKey && evaluateScope(actor, grant.scope, targetRecord, grant.conditions);
+      });
+      if (!scopedGrants.length) deny(actor, permissionKey, targetRecord, { reason: 'SCOPE', entity: options.entity, context: options.context });
     }
 
-    if (!hasGovtIdView) {
-      if (sanitized.pan_number) sanitized.pan_number = '•••••' + String(sanitized.pan_number).slice(-4);
-      if (sanitized.aadhaar_number) sanitized.aadhaar_number = '••••••••' + String(sanitized.aadhaar_number).slice(-4);
-      if (sanitized.pf_uan) sanitized.pf_uan = '••••••••' + String(sanitized.pf_uan).slice(-4);
+    checkFields(actor, effective, options.fields || [], Boolean(options.write), options.context);
+    if (!isFeatureEnabled(options.featureKey)) deny(actor, permissionKey, targetRecord, { reason: 'FEATURE', entity: options.entity, context: options.context });
+
+    if (options.makerChecker && targetRecord) {
+      var maker = targetRecord.prepared_by || targetRecord.created_by;
+      if (maker && maker === actor.employeeId) deny(actor, permissionKey, targetRecord, { reason: 'MAKER_CHECKER', entity: options.entity, context: options.context });
     }
 
-    if (!hasMedicalView) {
-      delete sanitized.medical_history;
-      delete sanitized.blood_group;
+    if (!scopedGrants.some(function (grant) { return conditionsAllow(grant.conditions, options.condition); })) {
+      deny(actor, permissionKey, targetRecord, { reason: 'CONDITION', entity: options.entity, context: options.context });
     }
+    return { effective: effective, grants: scopedGrants };
+  }
 
-    return sanitized;
+  function maskSensitiveFields(record, actor, context) {
+    if (!record) return record;
+    var output = {};
+    Object.keys(record).forEach(function (key) { output[key] = record[key]; });
+    var effective = resolveEffectivePermissions(actor.employeeId);
+    var masked = [];
+    var visibleSensitive = [];
+    Object.keys(FIELD_RULES).forEach(function (field) {
+      if (output[field] === '' || output[field] === null || output[field] === undefined) return;
+      if (!hasPermissionFromEffective(actor, effective, FIELD_RULES[field])) {
+        delete output[field];
+        masked.push(field);
+      } else {
+        visibleSensitive.push(field);
+      }
+    });
+    if (masked.length) output.masked_fields = masked;
+    if (visibleSensitive.length) Audit.logSensitiveAccess(actor.employeeId, visibleSensitive, targetEmployeeId(record), context);
+    return output;
   }
 
   return {
+    FIELD_RULES: FIELD_RULES,
     resolveEffectivePermissions: resolveEffectivePermissions,
     evaluateScope: evaluateScope,
+    getDownlineEmployeeIds: getDownlineEmployeeIds,
     isFeatureEnabled: isFeatureEnabled,
     check: check,
     maskSensitiveFields: maskSensitiveFields

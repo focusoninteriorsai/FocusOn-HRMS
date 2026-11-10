@@ -1,27 +1,31 @@
-# Dependencies
-node_modules/
-package-lock.json
-
-# Build outputs
-dist/
-build/
-
-# Environment and secrets
+# Local secrets and deployment configuration
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+.clasp.json
+.claspignore
+credentials.json
+client_secret*.json
 *.pem
 *.key
-.clasp.json
-credentials.json
+*.p12
+service-account*.json
 
-# IDE and OS
+# Editors and operating systems
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
+*~
+
+# Optional local tooling (never required by the application)
+node_modules/
+dist/
+build/
+.cache/
+
+# Logs and local test output
+*.log
+coverage/
+.tmp/

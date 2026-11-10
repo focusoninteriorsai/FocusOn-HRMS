@@ -1,13 +1,12 @@
 {
   "name": "FOCUSON HRMS",
   "short_name": "FOCUSON",
-  "description": "Enterprise HR and Payroll Management System",
-  "start_url": "./index.html",
+  "description": "Secure employee HR and payroll workspace",
+  "start_url": "./index.html#/dashboard",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait-primary",
-  "background_color": "#0f172a",
-  "theme_color": "#2563eb",
+  "background_color": "#f4f7fc",
+  "theme_color": "#3157d5",
   "icons": [
     {
       "src": "./assets/icons/icon-192.svg",

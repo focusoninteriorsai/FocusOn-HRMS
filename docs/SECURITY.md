@@ -1,76 +1,55 @@
-# FOCUSON HRMS - Security & Hardening Architecture
+# FOCUSON HRMS security notes — Phase 1
 
-This document outlines the security architecture, threat model, and defense-in-depth safeguards implemented in FOCUSON HRMS.
+## Implemented controls
 
----
+- **Authentication:** Employee ID + password only. Per-user random 256-bit salt material, server-only pepper, and iterated HMAC-SHA-256 (10,000 rounds by default, bounded 10,000–50,000). Passwords are never logged or stored in Sheets.
+- **Sessions:** two UUIDs provide the random token; only its SHA-256 hash is stored. Both idle and absolute expiry are enforced server-side. Logout-all revokes in one batch. Password change revokes other devices.
+- **Brute force:** per-Employee-ID failure counters/temporary locks and a global per-minute counter use locked CacheService updates. Credential failures are generic and audited. Cache eviction can weaken counters, so monitoring remains necessary.
+- **Authorization:** default deny, DENY precedence, scoped role grants, expiring overrides/delegations, sensitive-field permissions, feature checks, SoD, and amount/day/leave-type conditions run on the server.
+- **Data access:** all Sheets access passes through `Database.gs`; writes use LockService, schema validation, batch ranges, metadata, soft deletion, and cache invalidation. Strings beginning with `=`, `+`, `-`, `@`, tab, or CR receive an apostrophe before storage.
+- **Audit:** login success/failure, password changes, preferences, logout, denied permission checks, sensitive-field views, and foundation maintenance use the protected Audit_Logs tab. Secret-like detail keys are redacted.
+- **Browser:** strict CSP without inline JavaScript, `eval`, external scripts, or inline event handlers. Dynamic employee/branding values are inserted with `textContent`/DOM nodes, not HTML templates.
+- **Credential storage:** the token lives only in sessionStorage, never in URLs/localStorage/cache. API errors do not log request bodies. The API URL cannot be changed at runtime, preventing a malicious settings value from redirecting credentials to another host.
+- **Network:** simple JSON POST with no cookies (`credentials: omit`), no referrer, request timeout, safe-read retry/backoff, read de-duplication, request IDs, and disabled buttons during submission.
+- **Offline:** service worker handles only an explicit same-origin static allowlist and navigation fallback. It never caches API responses, arbitrary images, employee data, tokens, or Drive content.
+- **Setup:** no default account/password. Temporary owner properties are deleted after successful bootstrap. Resources remain private; code contains no public-sharing call.
+- **Configuration:** public branding has a strict key allowlist and value validators. Script Properties contain the pepper, generated database/folder IDs, and temporary bootstrap credential.
 
-## 1. Zero-Trust Security Philosophy
+## Trust boundaries and operational requirements
 
-The system enforces a **Server-Side Authoritative** security model:
-- The frontend UI hides buttons, menus, and views strictly for visual convenience.
-- Every API invocation re-authenticates the session token, recalculates active permissions, validates scope boundaries, verifies feature flags, and checks segregation-of-duties rules before reading or writing any data.
+1. The dedicated Google owner account is the highest-privilege principal. Use 2-Step Verification, restrict owner access, review executions, and protect recovery methods.
+2. Sheets protection prevents accidental/manual edits through the normal Sheets UI but cannot remove the owner’s ultimate control. Audit sheets are application append-only, not independent WORM storage.
+3. Apps Script does not provide a trusted source IP or User-Agent to this Web App. The client UA hash detects ordinary device changes but can be spoofed; it is not a replacement for session secrecy.
+4. GitHub Pages is public static hosting. No personal rows, exported reports, backups, Script Properties, `.clasp.json`, or credentials may be committed.
+5. “Anyone” Web App access is transport accessibility only. Public actions are limited to safe config and login; every other action requires a valid session and server-side checks.
+6. HTTPS is required for production, service workers, camera, and reliable geolocation. Keep the Apps Script `/exec` URL exact and review new deployment versions.
+7. Google quotas, execution time, and CacheService behavior are platform limits. Use execution logs and request IDs for incident response; do not disable validation to work around quota exhaustion.
 
----
+## Data protection rules for later modules
 
-## 2. Authentication & Credential Storage
+- Sensitive field reads must be logged; writes require their separate edit permission.
+- Selfie/location capture requires recorded consent and feature/policy/employee precedence. Raw GPS and selfies must be purged on their configured schedules.
+- Drive files stay private and are referenced by file ID. Do not enable link sharing.
+- Payroll must fail closed on missing statutory settings and retain maker-checker separation.
+- Reject direct API use that bypasses hidden menus exactly as the Phase 1 dispatcher does.
 
-### 2.1 Password Storage & Cryptography
-- Plaintext passwords are never stored, transmitted in URLs, or logged.
-- Passwords are hashed using **per-user cryptographic salt** + **server-side pepper** (stored in Google Apps Script `Script Properties`) + **1,000 iterations of HMAC-SHA256** using Google Apps Script's `Utilities` service.
-- First login or administrative reset triggers a mandatory `must_change_password: true` flag. The router blocks navigation to all other routes until a new password meeting complexity criteria (minimum 8 characters) is saved.
+## Geolocation limitation
 
-### 2.2 Session Management
-- Session tokens are generated cryptographically (`fcs_` + UUID + random bytes).
-- Only the **SHA-256 hash** of the session token is stored in the `Sessions` sheet.
-- Sessions automatically expire after 12 hours of absolute duration or after 30 minutes of client-side inactivity.
-- "Log Out All Devices" immediately revokes all active session hashes associated with the user account.
+A browser cannot reliably detect mock-GPS apps, rooted devices, modified location providers, or a remote-controlled browser. Server-side Haversine checks prove only that submitted coordinates fall inside a configured radius. Phase 3 mitigations are accuracy thresholds, outside/GPS-denied policy behavior, repeated-coordinate and impossible-travel flags, optional consent-based selfies, retention limits, and manager/HR spot checks. No face recognition is permitted.
 
-### 2.3 Brute-Force Rate Limiting & Account Lockout
-- Failed login attempts are tracked per Employee ID using `CacheService`.
-- Exceeding 5 failed attempts triggers an automated 15-minute temporary lockout.
-- Authentication responses return generic error messages ("Invalid credentials or inactive account") to prevent Employee ID enumeration attacks.
+## Phase 1 security verification map
 
----
+| Requirement | Implementation |
+|---|---|
+| No secrets in repository | `assets/js/config.js` contains only an empty public URL; `.gitignore` excludes clasp/credentials/env/key material. |
+| Bootstrap safety | `Setup.gs → bootstrapFirstAdmin`, forced change and property cleanup. |
+| Password/token storage | `Utils.gs` cryptographic helpers; `Auth.gs` login/session methods. |
+| Full authorization chain | `Permissions.gs → check`; action declarations in `Code.gs`. |
+| Input/formula safety | `Utils.gs` JSON/string helpers; `Database.gs → validateRecord`, writes. |
+| Failure handling | typed errors and envelopes in `Code.gs`; lock/rate errors in `Auth.gs`/`Database.gs`. |
+| Audit | `Audit.gs`, Auth events, permission denials, trigger maintenance. |
+| CSP/safe DOM | `index.html`, `assets/js/ui.js`, page modules. |
+| No personal offline cache | `sw.js` static URL allowlist. |
+| Idempotent schema/setup | `Setup.gs` and `HRMS_SCHEMA_VERSION`. |
 
-## 3. Access Control (9-Step Evaluation Order)
-
-Every request touching data is evaluated in this exact sequence:
-
-1. **Session & User Validation**: Token must match an active session hash; employee status must be `ACTIVE`.
-2. **Explicit DENY Override**: User-specific `DENY` overrides take absolute precedence over any granted role.
-3. **Union of Grants**: Roles + Active `ALLOW` overrides + Active Delegations.
-4. **Catalog Presence**: The requested `module.action` key must exist in `Permissions_Catalog`.
-5. **Scope Check**: Target entity must fall within the actor's scope (`Self`, `Direct reports`, `Team` [recursive downline], `Department`, `Branch`, `Company`).
-6. **Field-Level Protection**: Sensitive fields (`basic_salary`, `ctc_annual`, `bank_account_number`, `pan_number`, `aadhaar_number`) are masked unless explicit field view permissions are held.
-7. **Feature Switch**: The underlying module or action must be enabled in `Feature_Flags`.
-8. **Maker-Checker Segregation of Duties**: A user who prepared a record (e.g. prepared payroll run) is strictly blocked from verifying, approving, or releasing that run.
-9. **Condition Checks**: Ceiling limits (e.g., maximum approval amount) are verified.
-10. **Audit Log**: The outcome is immutably recorded in `Audit_Logs`.
-
----
-
-## 4. Formula Injection Protection (CSV / Spreadsheet Injection)
-
-Google Sheets evaluates cells starting with `=`, `+`, `-`, `@`, `\t`, or `\r` as formulas. 
-- In `Utils.sanitizeForSheet()`, all user-supplied text values starting with these characters are automatically prefixed with an apostrophe (`'`).
-- This renders malicious formulas as plain literal strings, eliminating remote code execution or data exfiltration via spreadsheet export.
-
----
-
-## 5. Leaver Rule (Automated Separation Protocol)
-
-When an employee is deactivated (`employee.deactivate`):
-1. Employee record is marked `INACTIVE`.
-2. Associated login account in `Users` is immediately set to `INACTIVE`.
-3. All active session tokens across all devices are permanently revoked.
-4. All pending approval requests currently assigned to the exited employee are automatically reassigned to the department head or Super Admin, preventing stalled company workflows.
-
----
-
-## 6. Geofence Spoofing Mitigations & Disclosures
-
-HTML5 Geolocation relies on operating system location providers. Browsers running on rooted or developer-enabled mobile devices can spoof GPS coordinates via third-party mock GPS apps. To mitigate this risk without requiring proprietary native spyware:
-- High accuracy is requested (`enableHighAccuracy: true`).
-- Very low accuracy signals (>300m) are automatically flagged as anomalies.
-- In-app verification selfies are compressed client-side and saved to private Drive storage.
-- Anomaly flags (`OUTSIDE_RADIUS`, `LOW_ACCURACY`) alert HR and managers during review.
+The complete 14-case isolated self-test suite is scheduled with its dependent modules; it cannot truthfully test payroll, attendance locks, delegates, or leaver reassignment before those modules exist.
