@@ -1,63 +1,82 @@
 # FOCUSON HRMS
 
-**FOCUSON HRMS** is an enterprise-grade, production-ready Human Resources and Payroll web application built for 80 to 300+ employees. It runs with zero database subscription costs by leveraging Google Apps Script as a JSON API, Google Sheets as a relational datastore, and Google Drive for secure file storage, with a responsive static frontend hosted on GitHub Pages.
+FOCUSON HRMS is a no-build HR and payroll web application for a company of approximately 80 employees, designed to scale to 300. The frontend is a static, mobile-first ES-module application for GitHub Pages. The backend is a Google Apps Script JSON Web App using Google Sheets for data and private Google Drive folders for files.
 
----
+This branch currently contains **Phase 1: the production security and application foundation**. It deliberately does not show unfinished attendance, leave, payroll, recruitment, or other later-phase menus.
 
-## Architecture Overview
+## Phase 1 capabilities
 
+- Premium Astra landing/login interface, light/dark themes, responsive app shell, English/Hindi dictionaries, accessible forms/dialogs, reduced-motion support, and safe offline shell caching.
+- Employee ID + password login; no consumer Google login and no email login.
+- Owner-supplied one-time first Super Admin credential; forced password change at first login.
+- Per-user random salt, server-side Script Properties pepper, and 10,000-round HMAC-SHA-256 password derivation by default. The work factor is stored per user for future migration.
+- Cryptographically random session tokens; only SHA-256 token hashes are stored. Configurable idle and absolute expiry, device fingerprint hash, logout, and logout-all.
+- Per-account and global sign-in throttling, generic credential errors, and security audit events.
+- Schema-validated, formula-injection-protected, batch-oriented Sheets access with additive migrations and soft deletion.
+- Default-deny permission engine with explicit DENY precedence, multiple roles, ALLOW overrides with expiry, bounded delegations, seven scope types, field protection, feature switches, maker-checker, and conditions.
+- Declarative API action registry, safe public branding configuration, and consistent JSON error envelopes.
+- Real-data dashboard and self-profile page. Empty values are shown as “Not provided”; no demo employee, chart, payroll value, or statutory rate is seeded.
+
+## Architecture
+
+```text
+GitHub Pages (static HTML/CSS/ES modules)
+  index.html → app.js → router/pages → api.js
+                                      |
+                           POST text/plain JSON
+                                      |
+Google Apps Script Web App (/exec)
+  Code.gs dispatcher
+    → Auth.gs session validation
+    → Permissions.gs authorization chain
+    → Phase 1 handler
+    → Database.gs / Audit.gs
+                                      |
+                    HRMS_CORE_DB + HRMS_ATTENDANCE_YEAR
+                    Private Drive folder hierarchy
 ```
-┌────────────────────────────────────────┐
-│   GitHub Pages Frontend (Static)       │
-│   Vanilla ES Modules, Astra Theme      │
-│   Hash Routing, WCAG AA Dark/Light     │
-└──────────────────┬─────────────────────┘
-                   │ POST (text/plain JSON)
-                   ▼
-┌────────────────────────────────────────┐
-│   Google Apps Script Web App API       │
-│   Action Dispatcher & 9-Step RBAC      │
-│   Iterated HMAC-SHA256 Auth & Sessions │
-└─────────┬──────────────────┬───────────┘
-          │                  │
-          ▼                  ▼
-┌──────────────────┐ ┌───────────────────┐
-│  Google Sheets   │ │   Google Drive    │
-│  HRMS_CORE_DB    │ │ Private Storage:  │
-│  Attendance/Year │ │ Documents/Selfies │
-└──────────────────┘ └───────────────────┘
+
+The browser never receives a trusted role decision from storage or navigation state. Menu visibility is only a convenience. Every protected action authenticates and authorizes again on the server.
+
+## Repository layout
+
+```text
+index.html, 404.html, manifest.webmanifest, sw.js
+assets/
+  css/       Astra tokens, base, components, animations, pages
+  i18n/      en.json, hi.json
+  icons/     Neutral product icons
+  js/        API, auth, router, store, i18n, theme, UI, geo/camera helpers
+  js/pages/  Dashboard, profile, password change, error pages
+backend/
+  appsscript.json
+  Code.gs, Utils.gs, Database.gs, Setup.gs
+  Auth.gs, Audit.gs, Permissions.gs
+docs/
+  DEPLOYMENT.md, SECURITY.md, API.md
 ```
 
-- **Frontend:** Static SPA hosted on GitHub Pages or any static CDN. Pure vanilla HTML5, CSS3 with Astra design system variables, and modern ES modules. No Node build pipeline or compilation step required.
-- **Backend:** Google Apps Script Web App deployed as *Execute as Me*, *Access Anyone*. Employs a single action dispatcher using `POST` with `Content-Type: text/plain;charset=utf-8` to bypass browser CORS preflight restrictions.
-- **Database:** Google Sheets accessed via batched operations in `Database.gs`, protected with LockService and formula-injection guards (`= + - @ \t \r` escaped with `'`).
-- **File Storage:** Private Google Drive folders for employee documents, geofence verification selfies, and generated payslips.
-- **Access Control:** 9-step evaluation engine enforcing Default Deny, explicit DENY override precedence, recursive downline team scopes, field-level financial masking, and maker-checker segregation of duties.
+## Quick start
 
----
+Follow **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** in order. There is no `npm install`, bundler, framework compilation, or generated frontend. After the Apps Script deployment, place its `/exec` URL in `assets/js/config.js` and serve the repository root with GitHub Pages.
 
-## Core Security Tenets
+For local static inspection only, any ordinary static HTTP server can serve the repository root. API login requires the deployed Apps Script backend and an HTTPS production URL.
 
-1. **Server-Side Authoritative:** The server validates session, permissions, scope, and segregation of duties on every action. Frontend UI gating exists solely for convenience.
-2. **Zero Hardcoded Secrets:** No spreadsheet IDs, passwords, or salts exist in source code. All secrets and server peppers reside exclusively in Script Properties.
-3. **Cryptographic Protection:** Passwords use user-specific salts combined with a server pepper, hashed via iterated HMAC-SHA256. Session tokens are generated cryptographically and stored only as SHA-256 hashes.
-4. **Formula Injection Guard:** All user inputs stored in spreadsheets are prefixed with `'` if starting with calculation characters (`=`, `+`, `-`, `@`).
-5. **Maker-Checker Segregation:** A user who prepares a payroll run or financial transaction is strictly prevented from verifying, approving, or releasing that run.
+## Assumptions and deliberate limits
 
----
+1. **Phased delivery:** only the Phase 1 actions listed in `docs/API.md` exist. Other modules return `NOT_FOUND` rather than presenting dead screens.
+2. **Setup identity:** the initial Super Admin’s display name defaults to the supplied Employee ID unless `SETUP_ADMIN_NAME` is provided. HR replaces this with real employee information in the Employees phase.
+3. **Safe technical defaults:** empty session/password settings use documented conservative defaults (30-minute idle, 12-hour absolute session, 12-character password with complexity). Statutory and organization settings have no invented defaults.
+4. **Device signal:** Apps Script Web Apps do not expose trusted client IP or User-Agent headers to `doPost`. The browser-supplied User-Agent is hashed as a secondary device signal, not treated as proof of identity. A browser UA change can require a new login.
+5. **Sheets audit trail:** application code appends audit events and Setup protects tabs from manual edits. The Google account owner ultimately controls Sheets and Drive; owner access and 2-Step Verification are therefore part of the security boundary.
+6. **Cache limits:** CacheService can evict rate counters early. The deployment account’s executions and audit logs must be monitored; a larger external abuse-defense layer is outside this no-paid-service architecture.
+7. **No statutory filing or values:** PF, ESI, PT, TDS, bonus, gratuity, and wage-definition keys are empty. Payroll cannot silently use assumptions.
+8. **No GPS trust claim:** the later attendance phase will enforce geofences on the server, but browsers cannot detect mock-GPS software. This limitation and mitigations are documented in `docs/SECURITY.md`.
+9. **Offline privacy:** the service worker caches only an allowlist of static files. API calls, session data, employee data, Drive files, and non-GET requests are never cached.
+10. **Time zone:** the Apps Script manifest and displayed dates use Asia/Kolkata. Stored instants are ISO UTC strings; date-only fields remain ISO calendar dates.
 
-## Assumptions & Design Decisions
+## Next phases
 
-- **Browser Geo-Fencing:** HTML5 Geolocation provides GPS coordinates and accuracy circles. As documented in Section 7 of the specification, browsers cannot reliably detect simulated GPS apps; therefore, the system relies on server-side Haversine validation, accuracy thresholds, anomaly flags, and optional selfie capture.
-- **Dual Language Support:** English and Hindi strings are maintained in separate JSON dictionaries (`assets/i18n/en.json` and `hi.json`), switchable on demand and saved per user.
-- **Simple Mode:** Designed for storekeeper and basic mobile users on slow networks, providing 4 large direct touch actions (Check-in, Leave, Payslip, Profile).
+Phase 2 adds access administration, organization, employees, workflow, and approval screens. Phase 3 adds attendance and leave. Phase 4 adds payroll, documents, notifications, and reports. Phase 5 completes recruitment, performance, exit, RDash, backup/restore, and the full self-test/audit package.
 
----
-
-## Implementation Roadmap
-
-- **Phase 1 (Complete):** Repo skeleton, Astra design system (tokens, components, animations, pages), responsive `index.html` landing & login card, app shell, router, i18n engine, theme manager, API client; backend `Code.gs`, `Utils.gs`, `Database.gs`, `Setup.gs`, `Auth.gs`, `Audit.gs`, `Permissions.gs`, `public.config`, and `DEPLOYMENT.md`.
-- **Phase 2:** Super Admin Console, Role Builder, Permission Matrix, Authority Setup, User Access, Feature Switches, Audit Viewer, Branding Studio, Org Setup, Employees, Users, Workflow Engine, Approval Inbox.
-- **Phase 3:** Attendance Policies, Geo-fencing Haversine validation, Optional Selfie capture, Regularization, Leave Management, Calendar, Triggers.
-- **Phase 4:** Statutory Payroll Runs, Salary Structures, Loans/Advances, Payslip PDF Generation, Bank Transfer Sheets, Reports.
-- **Phase 5:** Recruitment, Performance, Exit/F&F, RDash Integration, Backup/Restore, PWA Offline Shell, Full Automated Test Suite (`Tests.gs`), Security & Admin Documentation.
+Stop here for review before typing **NEXT** for Phase 2.

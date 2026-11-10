@@ -1,62 +1,89 @@
-// FOCUSON HRMS - i18n Localization Engine (English & Hindi)
+import { CONFIG } from './config.js';
 
-let currentLang = localStorage.getItem('FOCUSON_LANG') || 'en';
-const translations = {
-  en: null,
-  hi: null
-};
-
+const SUPPORTED = ['en', 'hi'];
 const listeners = new Set();
+let language = CONFIG.DEFAULT_LANGUAGE;
+let messages = {};
+let fallbackMessages = {};
 
-export async function initI18n() {
+function readStoredLanguage() {
   try {
-    const [enRes, hiRes] = await Promise.all([
-      fetch('./assets/i18n/en.json'),
-      fetch('./assets/i18n/hi.json')
-    ]);
-    translations.en = await enRes.json();
-    translations.hi = await hiRes.json();
-  } catch (err) {
-    console.error('Failed to load i18n dictionaries:', err);
+    const value = localStorage.getItem('focuson.language');
+    return SUPPORTED.includes(value) ? value : '';
+  } catch (error) {
+    return '';
   }
+}
+
+async function loadMessages(locale) {
+  const response = await fetch(new URL(`../i18n/${locale}.json`, import.meta.url), { cache: 'no-cache' });
+  if (!response.ok) throw new Error('translationLoadFailed');
+  return response.json();
+}
+
+export async function initI18n(preferredLanguage = '') {
+  fallbackMessages = await loadMessages('en');
+  const selected = preferredLanguage || readStoredLanguage() || CONFIG.DEFAULT_LANGUAGE;
+  language = SUPPORTED.includes(selected) ? selected : 'en';
+  messages = language === 'en' ? fallbackMessages : await loadMessages(language);
+  applyDocumentLanguage();
+}
+
+function lookup(source, key) {
+  return key.split('.').reduce((value, part) => (
+    value && typeof value === 'object' ? value[part] : undefined
+  ), source);
+}
+
+export function t(key, variables = {}) {
+  const template = lookup(messages, key) ?? lookup(fallbackMessages, key) ?? key;
+  return String(template).replace(/\{(\w+)\}/g, (match, name) => (
+    Object.prototype.hasOwnProperty.call(variables, name) ? String(variables[name]) : match
+  ));
 }
 
 export function getLanguage() {
-  return currentLang;
+  return language;
 }
 
-export function setLanguage(lang) {
-  if (lang !== 'en' && lang !== 'hi') return;
-  currentLang = lang;
-  localStorage.setItem('FOCUSON_LANG', lang);
-  document.documentElement.lang = lang;
-  listeners.forEach(fn => fn(lang));
+export async function setLanguage(nextLanguage, { persist = true } = {}) {
+  if (!SUPPORTED.includes(nextLanguage)) return;
+  language = nextLanguage;
+  messages = nextLanguage === 'en' ? fallbackMessages : await loadMessages(nextLanguage);
+  if (persist) {
+    try {
+      localStorage.setItem('focuson.language', nextLanguage);
+    } catch (error) {
+      // The preference remains valid for this tab when storage is unavailable.
+    }
+  }
+  applyDocumentLanguage();
+  listeners.forEach((listener) => listener(nextLanguage));
 }
 
-export function onLanguageChange(fn) {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
+function applyDocumentLanguage() {
+  document.documentElement.lang = language;
+  document.documentElement.dir = 'ltr';
+  document.querySelectorAll('[data-i18n]').forEach((node) => {
+    node.textContent = t(node.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-aria]').forEach((node) => {
+    node.setAttribute('aria-label', t(node.dataset.i18nAria));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach((node) => {
+    node.setAttribute('title', t(node.dataset.i18nTitle));
+  });
 }
 
-// Translates dot-notated key: t('login.signIn') or with variables: t('common.welcome', { name: 'John' })
-export function t(keyPath, params = {}) {
-  const dict = translations[currentLang] || translations.en || {};
-  const fallback = translations.en || {};
-  
-  const resolve = (obj, path) => path.split('.').reduce((acc, part) => (acc && acc[part] !== undefined ? acc[part] : null), obj);
-  
-  let text = resolve(dict, keyPath);
-  if (text === null || text === undefined) {
-    text = resolve(fallback, keyPath);
-  }
-  if (text === null || text === undefined) {
-    return keyPath;
-  }
-  
-  if (typeof text === 'string' && Object.keys(params).length > 0) {
-    Object.keys(params).forEach(p => {
-      text = text.replace(new RegExp(`{${p}}`, 'g'), params[p]);
-    });
-  }
-  return text;
+export function translateError(error) {
+  const code = error && error.code ? error.code : 'SERVER';
+  const key = `errors.${code}`;
+  const translated = t(key);
+  if (language === 'en' && error?.message && /\s/.test(error.message)) return error.message;
+  return translated === key ? (error?.message || t('errors.SERVER')) : translated;
+}
+
+export function onLanguageChange(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }

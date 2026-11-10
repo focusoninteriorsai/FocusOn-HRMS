@@ -1,129 +1,100 @@
-// FOCUSON HRMS - Authentication & Session Management
-// Token strictly kept in sessionStorage; auto idle logout; forced password change.
-
-import { apiRequest } from './api.js';
-import { CONFIG } from './config.js';
-import { setState, getState } from './store.js';
+import { apiRequest, getSessionToken, storeSessionToken, clearSessionToken } from './api.js';
+import { clearSessionState, getState, setState } from './store.js';
 
 let idleTimer = null;
+let lastActivityReset = 0;
 
-function resetIdleTimer() {
-  if (idleTimer) clearTimeout(idleTimer);
-  const token = sessionStorage.getItem('FOCUSON_SESSION_TOKEN');
-  if (!token) return;
-
-  idleTimer = setTimeout(() => {
-    logout(true); // Idle timeout logout
-  }, CONFIG.SESSION_IDLE_TIMEOUT_MS);
+function applySession(data) {
+  setState({
+    user: data.user,
+    mustChangePassword: Boolean(data.mustChangePassword),
+    permissions: new Set(data.effectivePermissions || []),
+    scopes: data.scopes || {},
+    session: data.session || null
+  });
 }
 
-// Activity listeners to reset idle timer
-['mousedown', 'keydown', 'touchstart', 'scroll'].forEach(evt => {
-  window.addEventListener(evt, resetIdleTimer, { passive: true });
+function clearIdleTimer() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+export function resetIdleTimer() {
+  clearIdleTimer();
+  if (!getSessionToken() || !getState().user) return;
+  const seconds = Number(getState().session?.idleTimeoutSeconds) || 1800;
+  idleTimer = setTimeout(() => endLocalSession('idle'), Math.max(60, seconds) * 1000);
+}
+
+function onActivity() {
+  const now = Date.now();
+  if (now - lastActivityReset > 15000) {
+    lastActivityReset = now;
+    resetIdleTimer();
+  }
+}
+
+['pointerdown', 'keydown', 'touchstart'].forEach((eventName) => {
+  window.addEventListener(eventName, onActivity, { passive: true });
 });
 
-export async function login(employeeId, password) {
-  if (!employeeId || !password) {
-    throw { code: 'VALIDATION', message: 'Employee ID and password are required' };
-  }
-
-  const cleanEmpId = employeeId.trim().toUpperCase();
-  const res = await apiRequest('auth.login', {
-    employeeId: cleanEmpId,
-    password: password
-  }, { skipAuth: true });
-
-  // Store token in sessionStorage
-  sessionStorage.setItem('FOCUSON_SESSION_TOKEN', res.token);
-
-  const permissionsSet = new Set(res.effectivePermissions || []);
-
-  setState({
-    token: res.token,
-    user: res.user,
-    mustChangePassword: !!res.mustChangePassword,
-    effectivePermissions: permissionsSet
-  });
-
+export async function signIn(employeeId, password) {
+  const data = await apiRequest('auth.login', { employeeId: employeeId.trim().toUpperCase(), password }, { skipAuth: true });
+  storeSessionToken(data.token);
+  applySession(data);
   resetIdleTimer();
-  return res;
+  return data;
 }
 
-export async function validateExistingSession() {
-  const token = sessionStorage.getItem('FOCUSON_SESSION_TOKEN');
-  if (!token) {
-    setState({ user: null, token: null, effectivePermissions: new Set() });
+export async function restoreSession() {
+  if (!getSessionToken()) {
+    clearSessionState();
     return null;
   }
-
   try {
-    const res = await apiRequest('auth.validateSession', {}, { isRead: true });
-    const permissionsSet = new Set(res.effectivePermissions || []);
-
-    setState({
-      token,
-      user: res.user,
-      mustChangePassword: !!res.mustChangePassword,
-      effectivePermissions: permissionsSet
-    });
-
+    const data = await apiRequest('auth.session', {}, { isRead: true });
+    applySession(data);
     resetIdleTimer();
-    return res;
-  } catch (err) {
-    sessionStorage.removeItem('FOCUSON_SESSION_TOKEN');
-    setState({ user: null, token: null, effectivePermissions: new Set() });
+    return data;
+  } catch (error) {
+    clearSessionToken();
+    clearSessionState();
     return null;
   }
 }
 
 export async function changePassword(currentPassword, newPassword) {
-  const res = await apiRequest('auth.changePassword', {
-    currentPassword,
-    newPassword
-  });
-
+  const data = await apiRequest('auth.changePassword', { currentPassword, newPassword });
   setState({ mustChangePassword: false });
-  return res;
+  resetIdleTimer();
+  return data;
 }
 
-export async function logout(isIdle = false) {
-  if (idleTimer) clearTimeout(idleTimer);
+export async function savePreferences(patch) {
+  const data = await apiRequest('auth.updatePreferences', patch);
+  if (data.session) setState({ session: data.session });
+  return data;
+}
 
+async function revokeRemote(allDevices) {
+  if (!getSessionToken()) return;
   try {
-    const token = sessionStorage.getItem('FOCUSON_SESSION_TOKEN');
-    if (token) {
-      await apiRequest('auth.logout', {});
-    }
-  } catch (e) {
-    // Silently continue client-side cleanup
-  } finally {
-    sessionStorage.removeItem('FOCUSON_SESSION_TOKEN');
-    setState({
-      user: null,
-      token: null,
-      mustChangePassword: false,
-      effectivePermissions: new Set()
-    });
-    window.location.hash = '#/login';
-    if (isIdle) {
-      window.dispatchEvent(new CustomEvent('focuson:idle_logout'));
-    }
+    await apiRequest(allDevices ? 'auth.logoutAll' : 'auth.logout', {});
+  } catch (error) {
+    // Local credentials are always removed, including when the network is unavailable.
   }
 }
 
-export async function logoutAll() {
-  if (idleTimer) clearTimeout(idleTimer);
-
-  try {
-    await apiRequest('auth.logoutAll', {});
-  } finally {
-    sessionStorage.removeItem('FOCUSON_SESSION_TOKEN');
-    setState({
-      user: null,
-      token: null,
-      mustChangePassword: false,
-      effectivePermissions: new Set()
-    });
-    window.location.hash = '#/login';
-  }
+function endLocalSession(reason) {
+  clearIdleTimer();
+  clearSessionToken();
+  clearSessionState();
+  window.dispatchEvent(new CustomEvent('focuson:session-ended', { detail: { reason } }));
 }
+
+export async function signOut({ allDevices = false } = {}) {
+  await revokeRemote(allDevices);
+  endLocalSession(allDevices ? 'logoutAll' : 'logout');
+}
+
+window.addEventListener('focuson:session-ended', clearIdleTimer);

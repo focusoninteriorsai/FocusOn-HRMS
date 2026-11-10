@@ -1,121 +1,109 @@
-// FOCUSON HRMS - Single API Client
-// Adheres strictly to Apps Script text/plain POST JSON contract to avoid CORS preflight issues.
+import { CONFIG, getApiUrl } from './config.js';
 
-import { CONFIG } from './config.js';
-import { getState } from './store.js';
+const inFlightReads = new Map();
+const TOKEN_KEY = 'focuson.session.token';
 
-const inFlightRequests = new Map();
-
-function generateReqId() {
-  return 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
+export function getSessionToken() {
+  return sessionStorage.getItem(TOKEN_KEY) || '';
 }
 
-export async function apiRequest(action, payload = {}, options = {}) {
-  const apiUrl = CONFIG.API_URL;
-  if (!apiUrl) {
-    throw {
-      code: 'SERVER',
-      message: 'Backend Web App URL is not configured. Please set the Apps Script URL.'
-    };
-  }
+export function storeSessionToken(token) {
+  sessionStorage.setItem(TOKEN_KEY, token);
+}
 
+export function clearSessionToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
+}
+
+export function createRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function makeError(code, message, details) {
+  return { code, message, details };
+}
+
+async function parseResponse(response) {
+  const text = await response.text();
+  let envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch (error) {
+    throw makeError('SERVER', 'invalidJsonResponse');
+  }
+  if (!envelope || typeof envelope.ok !== 'boolean') {
+    throw makeError('SERVER', 'invalidApiResponse');
+  }
+  return envelope;
+}
+
+export function apiRequest(action, payload = {}, options = {}) {
   const {
-    isRead = false,
-    retryCount = 0,
     skipAuth = false,
-    reqId = generateReqId()
+    isRead = false,
+    reqId = createRequestId()
   } = options;
+  const token = skipAuth ? '' : getSessionToken();
+  const flightKey = isRead ? `${token}:${action}:${JSON.stringify(payload)}` : '';
+  if (flightKey && inFlightReads.has(flightKey)) return inFlightReads.get(flightKey);
 
-  // Deduplication for identical in-flight read requests
-  const flightKey = isRead ? `${action}:${JSON.stringify(payload)}` : null;
-  if (flightKey && inFlightRequests.has(flightKey)) {
-    return inFlightRequests.get(flightKey);
-  }
-
-  const token = skipAuth ? null : (sessionStorage.getItem('FOCUSON_SESSION_TOKEN') || null);
-
-  const requestBody = JSON.stringify({
-    action,
-    token,
-    payload,
-    reqId
-  });
-
-  const execute = async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
-
-    try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8'
-        },
-        body: requestBody,
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw {
-          code: 'SERVER',
-          message: `HTTP Error ${response.status}: ${response.statusText}`
-        };
-      }
-
-      const text = await response.text();
-      let result;
-      try {
-        result = JSON.parse(text);
-      } catch (parseErr) {
-        throw {
-          code: 'SERVER',
-          message: 'Invalid JSON response from Google Apps Script. Check deployment logs.'
-        };
-      }
-
-      if (!result.ok) {
-        const error = result.error || { code: 'SERVER', message: 'An unknown server error occurred' };
-        
-        // Handle global session expiry
-        if (error.code === 'SESSION_EXPIRED' || error.code === 'AUTH_REQUIRED') {
-          sessionStorage.removeItem('FOCUSON_SESSION_TOKEN');
-          window.dispatchEvent(new CustomEvent('focuson:auth_expired', { detail: error }));
-        }
-
-        throw error;
-      }
-
-      return result.data;
-    } catch (err) {
-      clearTimeout(timeoutId);
-
-      // Retry safe reads with exponential backoff
-      if (isRead && retryCount < CONFIG.MAX_RETRIES && (err.name === 'AbortError' || err.code === 'SERVER')) {
-        const backoffMs = Math.pow(2, retryCount) * 800;
-        await new Promise(r => setTimeout(r, backoffMs));
-        return apiRequest(action, payload, { ...options, retryCount: retryCount + 1, reqId });
-      }
-
-      if (err.name === 'AbortError') {
-        throw {
-          code: 'SERVER',
-          message: 'Request timed out waiting for Google Apps Script execution.'
-        };
-      }
-
-      throw err;
-    } finally {
-      if (flightKey) {
-        inFlightRequests.delete(flightKey);
-      }
-    }
-  };
-
-  const promise = execute();
-  if (flightKey) {
-    inFlightRequests.set(flightKey, promise);
-  }
+  const promise = execute({ action, payload, token, reqId, skipAuth, isRead, retry: 0 })
+    .finally(() => {
+      if (flightKey) inFlightReads.delete(flightKey);
+    });
+  if (flightKey) inFlightReads.set(flightKey, promise);
   return promise;
+}
+
+async function execute({ action, payload, token, reqId, skipAuth, isRead, retry }) {
+  let apiUrl;
+  try {
+    apiUrl = getApiUrl();
+  } catch (error) {
+    throw makeError('CONFIGURATION', 'invalidApiUrl');
+  }
+  if (!apiUrl) throw makeError('CONFIGURATION', 'missingApiUrl');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
+  const safePayload = payload && typeof payload === 'object' && !Array.isArray(payload) ? { ...payload } : {};
+  safePayload.__client = { userAgent: navigator.userAgent.slice(0, 512) };
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action, token: token || null, payload: safePayload, reqId }),
+      signal: controller.signal,
+      credentials: 'omit',
+      redirect: 'follow',
+      referrerPolicy: 'no-referrer'
+    });
+    if (!response.ok) throw makeError('NETWORK', `http${response.status}`);
+    const envelope = await parseResponse(response);
+    if (envelope.reqId !== reqId) throw makeError('SERVER', 'requestIdMismatch');
+    if (!envelope.ok) {
+      const error = envelope.error || makeError('SERVER', 'unknownServerError');
+      if (!skipAuth && token && ['AUTH_REQUIRED', 'SESSION_EXPIRED'].includes(error.code)) {
+        clearSessionToken();
+        window.dispatchEvent(new CustomEvent('focuson:session-ended', { detail: { reason: 'expired' } }));
+      }
+      throw error;
+    }
+    return envelope.data;
+  } catch (error) {
+    const retryable = error.name === 'AbortError' || error instanceof TypeError || error.code === 'NETWORK';
+    if (isRead && retryable && retry < CONFIG.MAX_READ_RETRIES) {
+      await new Promise((resolve) => setTimeout(resolve, 400 * (2 ** retry)));
+      return execute({ action, payload, token, reqId, skipAuth, isRead, retry: retry + 1 });
+    }
+    if (error.name === 'AbortError') throw makeError('NETWORK', 'requestTimeout');
+    if (error instanceof TypeError) throw makeError('NETWORK', 'networkUnavailable');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
