@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="40" fill="url(#grad)" />
+  <!-- Minimal geometric corporate monogram: F + compass hexagon -->
+  <path d="M48 48h96v20H68v32h64v20H68v32H48V48z" fill="#ffffff" />
+  <circle cx="140" cy="140" r="14" fill="#38bdf8" />
+</svg>

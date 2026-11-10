@@ -1,0 +1,251 @@
+# FOCUSON HRMS: MASTER BUILD PROMPT (for Google AI Studio)
+
+Copy everything below this line into Google AI Studio as ONE message.
+
+---
+
+## 0. YOUR ROLE AND MISSION
+
+You are a senior full-stack engineer, security engineer and UI/UX designer. Build **FOCUSON HRMS**: a complete, production-ready HR and Payroll web application for a real company (about 80 employees, scalable to 300).
+
+- **Frontend:** static site hosted on **GitHub Pages**. Vanilla HTML/CSS/JavaScript (ES modules). **No build step, no framework requiring compilation.** The home page is `index.html`.
+- **Backend:** **Google Apps Script** Web App used as a JSON API.
+- **Database:** Google Sheets. **File storage:** Google Drive. **Documents:** Google Docs templates exported to PDF. **Notifications:** Gmail (limited) and in-app. **Calendar:** Google Calendar. **Config and secrets:** Script Properties.
+- No Firebase, Supabase, Vercel, paid database, or paid HRMS service.
+
+This is real software for real payroll and personal data. It is **not** a demo, prototype, mockup or tutorial.
+
+---
+
+## 1. NON-NEGOTIABLE RULES (violating any of these = failed task)
+
+1. **No demo, fake, random or sample data anywhere.** No lorem ipsum, no "John Doe", no fake charts, no random numbers, no hardcoded employees, no placeholder text, no `TODO`, no `// implement later`, no stubs, no "rest of the code remains the same". Every screen shows real data from the backend or a proper empty state.
+2. **No hardcoded credentials, passwords, API keys, spreadsheet IDs or secrets** in code or repo. Everything secret lives in Script Properties.
+3. **Every button, form, filter, tab and menu item must be wired and working.** No dead UI.
+4. **Server is the only source of truth for security.** Frontend hides things for convenience only. Every API action re-checks session, permission, scope, field access, feature switch, maker-checker and conditions on the server.
+5. **Nothing about permissions is hardcoded.** Only the Super Admin role is built in. All other roles, permissions, scopes, workflows, policies, leave types, statutory rates, geo-fence values, branding and feature switches are **data**, editable by the Super Admin from the UI.
+6. **Do not invent statutory numbers.** PF, ESI, Professional Tax, TDS, bonus, gratuity and wage-definition values are entered by the Super Admin/HR in Settings. Payroll must **refuse to run** if required statutory settings are missing, and say exactly which are missing.
+7. **Complete files only.** Output every file in full. If output length is a problem, follow the phase protocol in section 16. Never truncate a file silently.
+8. **Handle every failure:** network errors, quota errors, lock timeouts, expired sessions, permission denied, invalid input. Show clear user-facing messages.
+9. **Do not invent features outside this spec.** If something is ambiguous, choose the safest option, implement it, and list the assumption in `README.md`.
+10. **Out of scope:** DPR, daily progress reports, site tasks, site progress, material or issue tracking. These live in another system called **RDash**. HRMS only has Employee ID mapping and CSV import/export with RDash.
+
+---
+
+## 2. USERS
+
+CEO, Directors, HR, Accounts, Department Heads/Managers, Supervisors, Engineers/office staff, Storekeepers, Office Boys. Many use basic Android phones, so the UI must be simple, fast and usable on slow networks. Hindi and English labels are both required (toggle, stored per user).
+
+Login: **Employee ID + password** (no email login, no Google login for end users).
+
+---
+
+## 3. REPOSITORY STRUCTURE (create exactly this, then add what is needed)
+
+```
+/
+├─ index.html                # Home page + login + app shell entry
+├─ manifest.webmanifest      # PWA
+├─ sw.js                     # Service worker (cache static assets only, never API responses)
+├─ 404.html                  # Redirect to index.html (GitHub Pages SPA support)
+├─ assets/
+│  ├─ css/ (tokens.css, base.css, components.css, animations.css, pages.css)
+│  ├─ js/
+│  │  ├─ config.js           # ONLY non-secret: API_URL
+│  │  ├─ api.js              # Single API client
+│  │  ├─ auth.js, router.js (hash routing), store.js, i18n.js, ui.js, theme.js
+│  │  ├─ geo.js, camera.js   # geolocation and selfie capture
+│  │  └─ pages/ (one module per page/module)
+│  ├─ i18n/ (en.json, hi.json)
+│  └─ icons/                 # PWA icons (generate as SVG/PNG from the company logo setting; provide a neutral default)
+├─ backend/                  # Apps Script project files
+│  ├─ appsscript.json
+│  ├─ Code.gs (doPost/doGet router)
+│  ├─ Setup.gs (one-time bootstrap)
+│  ├─ Auth.gs, Permissions.gs, Workflow.gs, Database.gs, Audit.gs
+│  ├─ Attendance.gs, Leave.gs, Payroll.gs, Documents.gs, Employees.gs, Org.gs
+│  ├─ Recruitment.gs, Performance.gs, Exit.gs, Reports.gs, Settings.gs
+│  ├─ Backup.gs, Notifications.gs, Integrations.gs (RDash CSV), Triggers.gs, Utils.gs
+│  └─ Tests.gs (self-test functions)
+├─ docs/ (DEPLOYMENT.md, SECURITY.md, ADMIN_GUIDE.md, API.md)
+├─ README.md
+└─ .gitignore
+```
+
+GitHub Pages serves the repo root. Use **hash routing** (`#/dashboard`) so no server rewrite is needed. Add a strict Content-Security-Policy `<meta>` in `index.html` allowing only: self, the Apps Script API origin, `https://script.google.com` and `https://script.googleusercontent.com` for API calls, Google Fonts if used, and `data:`/`blob:` images. No inline event handlers; no `eval`.
+
+---
+
+## 4. BACKEND SPEC (Google Apps Script)
+
+### 4.1 API contract
+- Deploy as Web App: Execute as **Me**, Access **Anyone**. Because Apps Script cannot read custom headers or handle CORS preflight, the client sends **`POST` with `Content-Type: text/plain;charset=utf-8`** and a JSON body: `{ "action": "...", "token": "...", "payload": {...}, "reqId": "..." }`.
+- Response always: `{ ok: boolean, data?: any, error?: { code, message }, reqId }`. Use stable error codes (`AUTH_REQUIRED`, `SESSION_EXPIRED`, `FORBIDDEN`, `VALIDATION`, `NOT_FOUND`, `LOCKED`, `RATE_LIMITED`, `CONFLICT`, `SERVER`).
+- A single dispatcher maps `action` to a handler; each handler declares its required permission key(s), scope resolver, field-level rules and whether it writes. Unknown actions return `NOT_FOUND`.
+- `doGet` returns only a minimal health JSON (no data).
+- A **public** action `public.config` returns ONLY safe branding and login-page data (company name, logo URL, theme tokens, background config, login notice text, language default). Never any employee or internal data.
+
+### 4.2 Authentication and sessions
+- Passwords: per-user random salt + a server-side pepper in Script Properties + **iterated SHA-256 (HMAC)** using `Utilities`. Tune iterations so login stays well within Apps Script time limits; document the value. Never store or log plain passwords.
+- Session token: cryptographically random (UUID/`Utilities.getUuid()` combined with random bytes). Store **only the hash** of the token in `Sessions` with employee ID, created, last seen, expiry (idle timeout and absolute timeout, configurable), device/user-agent hash. Support logout and "logout all devices".
+- Brute-force protection: per Employee ID and global rate limiting using CacheService/Sheet counters; temporary lock after configurable failed attempts; audit every failure. Do not reveal whether the Employee ID exists.
+- First login and any admin password reset force a password change. Password policy configurable (min length, complexity). Reset only by users with `user.resetpassword`.
+- All write operations use `LockService` with timeout handling and return `LOCKED` with a retry hint on failure.
+
+### 4.3 Database (Google Sheets, accessed only through `Database.gs`)
+Two spreadsheets, IDs stored in Script Properties:
+- **HRMS_CORE_DB** and yearly **HRMS_ATTENDANCE_<YEAR>** (auto-created by trigger on 1 January and on demand).
+
+Core tabs (create with headers, data validation where useful, frozen header row, protected from manual editing):
+- Core: `Users, Employees, Departments, Designations, Branches`
+- Access: `Roles, Permissions_Catalog, Role_Permissions, User_Role_Map, User_Permission_Overrides, Delegations, Feature_Flags, Sessions`
+- Workflow: `Workflow_Definitions, Workflow_Steps, Approvals, Approval_Actions`
+- Time: `Attendance_Policies, Geofence_Locations, Shifts, Leave_Types, Leave_Applications, Leave_Balances, Holidays`
+- Sites (work-location only): `Sites, Employee_Site_Assignment`
+- Payroll: `Salary_Structure, Salary_Components, Salary_Revisions, Loans_Advances, Payroll_Runs, Payroll, Payslips`
+- Money: `Expenses`
+- People: `Recruitment, Candidates, Performance, Exit_Records`
+- System: `Documents, Doc_Templates, Notifications, Audit_Logs, Company_Settings, Backup_Logs, Consent_Log, Integration_Log`
+- Attendance file: `Attendance, Attendance_Regularization`
+
+Rules: every row has `id, created_at, updated_at, created_by, updated_by, status`. Soft delete only (status). Batch reads/writes (never cell-by-cell loops). Cache read-heavy lookups (role/permission map, settings) with CacheService and invalidate on change. **Formula-injection protection:** any user-supplied string starting with `= + - @` or tab/CR is stored prefixed with `'`. Validate and sanitize every input by schema. Define column schemas in one place and migrate safely (additive migrations, version stored in Company_Settings).
+
+### 4.4 Bootstrap (`Setup.gs`)
+A one-time `setupSystem()` run by the owner that: creates both spreadsheets, all tabs, Drive folder tree (private: Documents, Selfies, Receipts, Generated, Backups, Templates), seeds **only** the Permissions_Catalog, the built-in **Super Admin** role and system settings keys (empty values), creates triggers, and creates the **first Super Admin** account. The first Super Admin's Employee ID and a one-time temporary password are supplied by the owner through a documented, secure step (e.g. entered in Script Properties before running, then removed automatically after setup) and a password change is forced at first login. **No default or shared password may exist in code.** `setupSystem()` must be idempotent and safe to re-run.
+
+### 4.5 Triggers (`Triggers.gs`)
+Time-driven, minimal count, each logged: daily backup; daily session cleanup; daily selfie and raw-GPS retention purge; attendance auto check-out flagging; month cutoff attendance lock; leave accrual/carry-forward as configured; approval SLA reminders and escalation; yearly attendance file creation. Payroll processing runs in batches with a resume trigger to survive the ~6 minute limit.
+
+---
+
+## 5. ACCESS CONTROL (the core of the product)
+
+All permission data is editable by Super Admin from UI. Implement exactly:
+
+- **Permission** = `module.action` key from `Permissions_Catalog`. Catalog covers: employee profile, sensitive fields (`field.salary.view/edit`, `field.bank.view/edit`, `field.govtid.view`, `field.medical.view`), org setup, attendance (`markself, markothers, view, correct, regularize.approve, lock, export`), geofence and attendance policy, selfie view, leave, calendar, salary structure and revision, payroll (`prepare, verify, approve, release, reopen`, payslip view, statutory export, F&F), advances/loans/expenses, documents (per category), recruitment, performance, exit, approvals/workflow (`inbox, delegate, override, define`), reports (per report, view/export), users and access (`user.create, user.resetpassword, role.define, role.assign, override.grant, authority.delegate, accesslog.view`), system settings, backup/restore, announcements. Each has an `sensitive` flag.
+- **Actions** per module include View, Create, Edit, Delete (soft), Approve, Export plus module-specific ones.
+- **Scope:** Self, Direct reports, Team (full downline via reporting line), Department, Branch, Company, Custom list. Resolve scope on the server for every record touched.
+- **Role** = permissions + scope + optional condition (e.g. `amount_max`). Super Admin can create, clone, edit, deactivate roles. Multiple roles per user. **Template roles** (HR Manager, Department Head, Supervisor, Staff, Accounts, Executive) are offered as optional "Apply template" buttons in the Role Builder, never auto-seeded.
+- **User overrides:** ALLOW or DENY per permission with mandatory reason and expiry.
+- **Authority delegation:** Super Admin gives a higher authority (CEO/Director/HR Head) an **Authority profile**: scope, capability ceiling (what they may grant onward), workflow-definition rights, validity dates. Authorities can assign roles/overrides and define workflows **only within their ceiling and scope**. They can never touch Super Admin settings, backup/restore, audit log, or their own permissions, and cannot escalate themselves.
+- **Evaluation order (implement exactly):** session valid and user active, then explicit DENY override, then union of roles + active overrides + active delegations, then permission key present, then scope check, then field-level check (mask sensitive fields), then feature-switch check, then maker-checker/segregation of duties, then condition check, then execute and write to `Audit_Logs`. Default deny. Deny beats allow.
+- Safeguards: max 2 Super Admins (configurable lower bound 1, upper bound 2); sensitive grants require Super Admin; sensitive field views are logged; leaver rule (deactivation revokes login, roles, reassigns pending approvals); quarterly Access Review report; "Test as user" preview mode for Super Admin that never exposes real passwords and is audited; effective-permissions viewer ("what can this user do?").
+
+---
+
+## 6. WORKFLOW ENGINE
+
+Configurable by Super Admin (or authority within ceiling) from a visual Workflow Designer:
+- Request types: leave, attendance regularization, overtime, advance/loan, expense, salary revision, hiring/offer, payroll run, resignation/exit, document request, role/permission change.
+- Steps (1..N): sequential or parallel (any-of / all-of); approver = reporting manager, manager's manager, department head, any user with a role, or a named person; conditions (days, amount, leave type); SLA hours with reminder and escalation target; delegate during absence; actions approve, reject (comment mandatory), send back, withdraw.
+- Self-approval always blocked. Missing manager falls back to department head then HR. Exited approver: pending items reassigned. Workflows are **versioned**: in-flight requests finish on their original version.
+- One unified **Approval Inbox** for every approver, with history and comments.
+- **Payroll is maker-checker:** the person who prepares cannot verify, approve or release the same run.
+- Do not seed default workflows. Provide an "Apply suggested chain" helper per request type that the admin reviews before saving.
+
+---
+
+## 7. ATTENDANCE: GEO-FENCING (OFFICE ONLY) AND OPTIONAL SELFIE
+
+- Each employee has an **Attendance Policy** (Office Geo-fenced, Site/Field, Exempt/Flexible, or custom). Geo-fencing applies **only** when the policy requires it. Site/field policies never request location.
+- Geo-fence parameters are data: `Geofence_Locations` (lat, lng, radius in meters; multiple points per branch), minimum GPS accuracy, geo-fence on check-out (optional), outside behavior (Block or Flag + manager approval), GPS-denied behavior, check-in window.
+- Browser sends `lat, lng, accuracy, timestamp`. **Server** computes Haversine distance and decides. Time is always **server time**. Store inside/outside, distance, accuracy; keep raw coordinates only for the retention period set in Settings, then purge by trigger.
+- Anomaly flags: repeated identical coordinates, impossible travel, very low accuracy. Flags go to the manager/HR inbox.
+- **Selfie is an optional feature** controlled by Feature Switches at company, policy and employee levels (employee overrides policy overrides company). When OFF, no camera UI appears. When ON, capture in-app (`getUserMedia`, fallback to file input with `capture`), compress to a small JPEG client-side, upload, store in private Drive folder by month, link by file ID. Viewing requires `selfie.view`. Auto-delete after the configured retention. **No face recognition.**
+- Before first use of location or selfie, show a consent screen; record version and time in `Consent_Log`. No consent, no capture.
+- Shifts, grace, late rules, half-day rules, minimum hours, weekly off, holidays, comp-off, overtime (approved only), missed check-out handling, regularization with monthly limit, on-duty/tour requests, month lock (corrections after lock only via approval). All configurable.
+- Supervisors/authorised users can **mark attendance on behalf** (permission and scope controlled, flagged and audited).
+- Be honest in the UI and docs: a browser cannot detect mock-GPS apps. Document this limitation and the mitigations (accuracy limit, anomaly flags, optional selfie, spot checks).
+
+---
+
+## 8. LEAVE
+Leave types, accrual, carry-forward, encashment rules, holidays and weekly off are all configurable. Apply, cancel, approve through workflow, balance ledger with every movement recorded, calendar view, team availability for managers (scope aware), half-day support, attachments (private Drive).
+
+---
+
+## 9. PAYROLL
+- Salary types: monthly fixed, daily wage, hourly/OT. Payable-days divisor configurable.
+- Salary components fully configurable (earnings, deductions, taxable flag, statutory-wage flag, formula type: fixed, percentage of another component, per-day). Per-employee Salary_Structure with effective dates and revision history; arrears computed from revisions.
+- Monthly run: lock attendance, compute paid days (present + paid leave + holidays + weekly off; remainder is LOP), prorate components, add approved OT/incentives/arrears/reimbursements, apply deductions (PF, ESI, PT, TDS, loan/advance EMI) **using only parameters from Company_Settings**.
+- Run states: Draft, Prepared, Verified, Approved, Released, Locked. Maker-checker enforced. Reopen only with permission, reason and audit.
+- Batch processing with resume trigger. Idempotent: re-running a draft recomputes without duplicates.
+- Outputs generated from real data only: payslip PDF, payroll register, bank transfer sheet (CSV), PF/ESI data sheet, PT statement, LOP report, OT statement, loan ledger, F&F statement, annual salary summary for Form 16. The software **does not file** with statutory portals.
+- Payslips visible only to the employee (and `payslip.view` company-wide holders). Email only a "payslip ready" notice.
+- Show a clear banner that statutory configuration must be verified by the company's CA.
+
+---
+
+## 10. DOCUMENTS
+Google Docs templates with `{{placeholders}}` managed in `Doc_Templates` (upload/link by authorised users). Generate PDF into the employee's private Drive folder, record in `Documents` with unique document number and version. Categories: hiring, employment, exit, disciplinary, certificates, payroll, attendance, finance (no site/DPR documents). Per-category permissions. Sensitive letters require workflow approval before the final PDF; before that they carry a DRAFT watermark. Authorised signatory image applied only when permitted.
+
+---
+
+## 11. OTHER MODULES (all complete)
+Employees (master, photo, personal/bank/government IDs with field-level protection, reporting line, work-location type, policy assignment, document uploads), Organization setup (departments, designations, branches with geo-points, sites), Recruitment (openings, candidates, interview scheduling to Google Calendar, onboarding checklist), Performance (cycles, goals, reviews), Exit and F&F (resignation, clearance, settlement), Advances/Loans/Expenses (request, approve, disburse, EMI recovery in payroll, receipts), Holidays/Calendar, Notifications (in-app first, Gmail only for essential alerts, respect daily quota), Announcements, Reports (attendance register, muster roll, payroll register, LOP, headcount, attrition, leave) with scope-aware CSV/XLSX/PDF export, **RDash link** (shortcut + Employee ID mapping + CSV export of employee list + CSV import of site manpower/hours with validation and `Integration_Log`), Settings, Backup/Restore, Audit Viewer, Access Review.
+
+**Backup:** daily copy of both databases to a private Drive backup folder with timestamp, row-count integrity check, `Backup_Logs`, keep last 30 daily and 12 monthly, one-click restore for Super Admin that first makes a safety copy.
+
+---
+
+## 12. FRONTEND SPEC
+
+### 12.1 `index.html` is the home page
+It must contain: a premium **landing/home section** (company name, logo, tagline, short feature highlights drawn from settings, not hardcoded marketing fluff) and the **login card** (Employee ID, password, show/hide password, language toggle, "forgot password" instructions that tell the user to contact HR). After login the same page loads the **app shell** (sidebar on desktop, bottom navigation on mobile, top bar with notifications, language, theme, profile). The shell menu is generated from the user's effective permissions returned by the server (UX only).
+
+### 12.2 Design system: "Astra" card-based theme
+- **Card-based UI**: rounded cards (16 to 20 px), soft layered shadows, subtle gradient accents, glass-style translucent surfaces where legible, clear spacing scale, consistent iconography (inline SVG icon set; no icon CDN needed), strong typographic hierarchy, KPI cards, list cards, timeline cards, approval cards, empty-state cards.
+- **Animations** (CSS/Web Animations only, GPU-friendly, 60fps): page transitions, staggered card entrance, hover lift, button press feedback, skeleton loaders, animated counters for KPIs, animated success/error states, smooth sidebar/drawer/modal motion, a subtle ambient animated background option. **Honor `prefers-reduced-motion`** by disabling non-essential motion. No heavy animation libraries.
+- **Light and dark mode**, both fully designed, contrast meets WCAG AA. All colors, radii, shadows, fonts and motion durations are **CSS variables** in `tokens.css`.
+- **Super Admin Branding Studio** (Settings screen): the Super Admin can change, with live preview and one-click reset: logo (uploaded to Drive, served via a safe proxy action), company name, primary and accent colors, gradient style, font from a vetted list, card style (flat / soft / glass), corner radius, density, **login/home background** (solid, gradient presets, uploaded image, or built-in animated background), background overlay opacity and blur, default language and default theme. Saved to `Company_Settings`, exposed to the login page through `public.config`, and applied at runtime via CSS variables. Validate uploads (type, size) and never allow script injection through any branding field.
+- **Responsive and mobile-first**; large touch targets (min 44 px); a **Simple Mode** (4 large buttons: Check-in, Leave, Payslip, My Info) that Super Admin can enable per user, for Storekeeper and Office Boy type users.
+- Tables: search, filter, sort, pagination (server-side where data is large), column visibility, export (permission gated). Forms: inline validation, date pickers, photo/receipt upload, destructive-action confirmation. Loading, empty and error states on every screen.
+- Accessibility: semantic HTML, labels, focus management, keyboard navigation, ARIA for dialogs and live regions.
+- **i18n:** all UI strings in `en.json` and `hi.json`; no hardcoded user-facing strings in JS.
+- **PWA:** installable, offline shell only. Service worker must never cache API responses or any personal data.
+- Security in frontend: render user data with `textContent`/safe templating only (no unsafe `innerHTML` with data), keep the token in `sessionStorage` (never in URL, never logged), clear on logout/expiry, auto-logout on idle, handle 401/`SESSION_EXPIRED` globally, de-duplicate in-flight requests, retry safe reads with backoff, disable submit buttons during requests to prevent double submission, include a `reqId` for idempotency on writes.
+- Performance: lazy-load page modules, debounce inputs, minimal payloads, no external JS libraries unless essential (if used, pin exact version, load from cdnjs with SRI hash).
+
+### 12.3 Pages (all required)
+Home/Login, Dashboard (role-aware real KPIs), My Profile, Check-in/out, My Attendance, Regularization, Leave (apply, balance, calendar), My Payslips, My Documents, Approval Inbox, Employees, Org Setup, Attendance Admin (policies, geo-fence map entry by lat/lng, shifts, locks), Leave Admin, Payroll (salary structure, runs, register, exports), Loans/Advances/Expenses, Documents (generate, templates), Recruitment, Performance, Exit and F&F, Reports, Notifications, Announcements, RDash Link, **Super Admin Console** (Role Builder, Permission Matrix, Authority Setup, User Access with effective-permissions viewer, Workflow Designer, Feature Switches, Access Review, Audit Viewer, Branding Studio, Settings, Backup/Restore, Test-as-user).
+
+---
+
+## 13. SECURITY CHECKLIST (verify each before finishing)
+- Every handler enforces permission, scope, fields, switches, SoD, conditions on the server.
+- No secret or personal data in the repo; `.gitignore` covers local config, `.clasp.json` and credentials.
+- Brute-force protection, session expiry, logout-all, hashed tokens, salted+peppered iterated password hashes.
+- All inputs validated and sanitized; formula-injection guard; output escaped.
+- CSP, no inline scripts/handlers, no `eval`.
+- Audit log for logins, failures, permission and role changes, sensitive field views, salary/attendance corrections, approvals, exports, backups/restores.
+- Private Drive folders; no "anyone with link" sharing anywhere.
+- Retention purges for selfies and raw GPS.
+- Consent recorded before location/selfie use.
+- Documented limits: Apps Script quotas, Gmail daily limit, execution time, mock-GPS limitation.
+
+---
+
+## 14. TESTING (build it in, do not just describe it)
+Provide `Tests.gs` with runnable self-tests that create isolated temporary test data, run, and clean up. Cover at least these 14 cases: (1) staff cannot read another employee's payslip by changing an ID; (2) supervisor cannot approve outside their team; (3) HR cannot approve a payroll run they prepared; (4) authority cannot grant beyond their ceiling; (5) expired override has no effect; (6) explicit DENY beats role ALLOW; (7) office-policy employee outside radius is blocked/flagged per policy; (8) site-policy employee is never asked for location; (9) selfie switch precedence company < policy < employee; (10) deactivated employee cannot log in and pending approvals are reassigned; (11) salary field is masked without `field.salary.view`; (12) approver absence triggers delegate and SLA escalation; (13) correction after attendance lock requires approval; (14) a hidden-menu action sent directly to the API is rejected. Also add payroll unit tests with worked, hand-verifiable examples built **inside the test only**, never seeded into the real database.
+
+---
+
+## 15. DELIVERABLES
+1. All files in full, in the structure above.
+2. `README.md`: overview, architecture, assumptions.
+3. `docs/DEPLOYMENT.md`: step-by-step for a non-developer: create a dedicated company Google account with 2-Step Verification; create the Apps Script project and paste/upload backend files (or use `clasp`); set Script Properties; run `setupSystem()`; deploy the Web App (Execute as Me, Anyone); put the Web App URL into `assets/js/config.js`; push to GitHub; enable GitHub Pages; first Super Admin login; first-time configuration order (org, branches/geo-fence, roles, workflows, leave types, salary components, statutory settings, branding); backup and restore drill; how to redeploy a new backend version without changing the URL.
+4. `docs/SECURITY.md`, `docs/ADMIN_GUIDE.md` (Super Admin and authority handling), `docs/API.md` (every action, permission, payload, response).
+5. A final **self-audit report**: tick-list of sections 1, 5, 12 and 13 with how each is satisfied and where in the code.
+
+---
+
+## 16. EXECUTION PROTOCOL (to avoid truncated output)
+Work in phases. After each phase: output complete files for that phase, a short list of what works, known limits, and then **stop and wait for me to type NEXT**. Do not start the next phase on your own.
+
+- **Phase 1:** repo skeleton, `config.js`, design system (tokens, components, animations), `index.html` home + login, app shell, router, i18n, theme, API client; backend `Code.gs`, `Utils.gs`, `Database.gs`, `Setup.gs`, `Auth.gs`, `Audit.gs`, `Permissions.gs` (full evaluation engine), `public.config`, session handling, Super Admin bootstrap, `DEPLOYMENT.md`.
+- **Phase 2:** Super Admin Console (Role Builder, Permission Matrix, Authority Setup, User Access, Feature Switches, Audit Viewer, Branding Studio, Settings), Org setup, Employees, Users, Workflow engine and Approval Inbox, related tests.
+- **Phase 3:** Attendance (policies, geo-fence, selfie, site attendance, regularization, locks), Leave, Holidays/Calendar, triggers, related tests.
+- **Phase 4:** Payroll (components, structures, runs, loans/advances, expenses, F&F, exports), Documents, Notifications, Reports, related tests.
+- **Phase 5:** Recruitment, Performance, Exit, RDash link, Backup/Restore, PWA/service worker, full test suite, `SECURITY.md`, `ADMIN_GUIDE.md`, `API.md`, final self-audit report.
+
+Begin with **Phase 1** now. Before writing code, print a concise implementation plan for Phase 1 (files, key decisions, assumptions), then deliver the complete code.
