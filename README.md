@@ -76,7 +76,7 @@ docs/
 
 ## Quick start
 
-Follow **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** in order. There is no `npm install`, bundler, framework compilation, or generated frontend. After the Apps Script deployment, place its `/exec` URL in `assets/js/config.js` and serve the repository root with GitHub Pages.
+Follow **[docs/FOCUSON_HRMS_SETUP_GUIDE.docx](docs/FOCUSON_HRMS_SETUP_GUIDE.docx)** (Word, step-by-step with troubleshooting) or **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** in order. There is no `npm install`, bundler, framework compilation, or generated frontend. After the Apps Script deployment, place its `/exec` URL in `assets/js/config.js` and serve the repository root with GitHub Pages.
 
 For local static inspection only, any ordinary static HTTP server can serve the repository root. API login requires the deployed Apps Script backend and an HTTPS production URL.
 
@@ -96,7 +96,9 @@ For local static inspection only, any ordinary static HTTP server can serve the 
 ## Verification
 
 ```bash
-node tools/smoke-test.js
+node tools/smoke-test.js       # 119 backend checks
+node tools/ui-check.js         # kit imports, i18n, action registry, CSP, routes
+node tools/contract-check.js   # 42 response contracts the screens read
 ```
 
 The suite boots the whole backend in memory against a Sheets/Drive emulator and exercises 119 checks across setup, authentication, sessions, permissions, employees, organization, attendance, leave, payroll, money, documents, recruitment, performance, exit, assets, announcements, reports, workflow, notifications, settings, backup/restore, self test, restricted-user enforcement and CSV import/export. It must stay green before any deployment.

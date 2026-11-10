@@ -392,6 +392,37 @@ order.forEach((name) => {
   vm.runInContext(source, context, { filename: name });
 });
 
+/* --------------------------------------- Guard: real Apps Script load order */
+// Apps Script has no load-order guarantee and in practice evaluates files
+// alphabetically. Loading the backends alphabetically must therefore never throw,
+// which is what "Cannot read properties of undefined (reading 'VALID_SCOPES')"
+// looked like when Access.gs captured Permissions.VALID_SCOPES at file scope.
+function assertOrderIndependent() {
+  const alphabetically = fs.readdirSync(BACKEND).filter((name) => name.endsWith('.gs')).sort();
+  const probe = {};
+  Object.keys(context).forEach((key) => { probe[key] = context[key]; });
+  vm.createContext(probe);
+  alphabetically.forEach((name) => {
+    try {
+      vm.runInContext(fs.readFileSync(path.join(BACKEND, name), 'utf8'), probe, { filename: name });
+    } catch (error) {
+      throw new Error('Backend files must load in any order, but ' + name + ' failed when files load alphabetically: ' + error.message);
+    }
+  });
+  const later = alphabetically.slice().reverse();
+  const reverseProbe = {};
+  Object.keys(context).forEach((key) => { reverseProbe[key] = context[key]; });
+  vm.createContext(reverseProbe);
+  later.forEach((name) => {
+    try {
+      vm.runInContext(fs.readFileSync(path.join(BACKEND, name), 'utf8'), reverseProbe, { filename: name });
+    } catch (error) {
+      throw new Error('Backend files must load in any order, but ' + name + ' failed in reverse order: ' + error.message);
+    }
+  });
+}
+assertOrderIndependent();
+
 /* ------------------------------------------------------------------- Harness */
 const failures = [];
 const loginTokens = {};
