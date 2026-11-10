@@ -4,10 +4,12 @@
  */
 var Permissions = (function () {
   var VALID_SCOPES = ['Self', 'Direct reports', 'Team', 'Department', 'Branch', 'Company', 'Custom list'];
+  var SCOPE_RANK = { 'Self': 0, 'Custom list': 1, 'Direct reports': 2, 'Team': 3, 'Department': 4, 'Branch': 5, 'Company': 6 };
   var FIELD_RULES = {
     ctc_annual: 'field.salary.view', basic_salary: 'field.salary.view', gross_salary: 'field.salary.view',
     bank_account_number: 'field.bank.view', bank_ifsc: 'field.bank.view', bank_name: 'field.bank.view',
     pan_number: 'field.govtid.view', aadhaar_number: 'field.govtid.view', pf_uan: 'field.govtid.view', esi_number: 'field.govtid.view',
+    uan_number: 'field.govtid.view', esi_ip_number: 'field.govtid.view',
     medical_notes: 'field.medical.view', blood_group: 'field.medical.view'
   };
 
@@ -208,15 +210,51 @@ var Permissions = (function () {
     return allowed;
   }
 
-  function isFeatureEnabled(featureKey) {
-    if (!featureKey) return true;
-    var flags = Database.getAllCached('Feature_Flags');
-    for (var i = 0; i < flags.length; i++) {
-      if (flags[i].feature_key === featureKey && String(flags[i].status).toUpperCase() === 'ACTIVE') {
-        return Utils.asBoolean(flags[i].enabled);
-      }
-    }
+  function scopeMatches(flag, actor) {
+    var type = String(flag.scope_type || 'GLOBAL').toUpperCase();
+    if (!actor) return false;
+    if (type === 'EMPLOYEE') return String(flag.scope_id) === String(actor.employeeId);
+    if (type === 'BRANCH') return Boolean(actor.branchId) && String(flag.scope_id) === String(actor.branchId);
+    if (type === 'DEPARTMENT') return Boolean(actor.departmentId) && String(flag.scope_id) === String(actor.departmentId);
     return false;
+  }
+
+  /** Resolution order: EMPLOYEE, BRANCH, DEPARTMENT override, then the global switch. */
+  function isFeatureEnabled(featureKey, actor) {
+    if (!featureKey) return true;
+    if (typeof actor === 'string') actor = { employeeId: actor, branchId: actor, departmentId: actor };
+    var flags = Database.getAllCached('Feature_Flags');
+    var global = null;
+    var employeeScope = null;
+    var branchScope = null;
+    var departmentScope = null;
+    for (var i = 0; i < flags.length; i++) {
+      var flag = flags[i];
+      if (flag.feature_key !== featureKey || String(flag.status).toUpperCase() !== 'ACTIVE') continue;
+      var type = String(flag.scope_type || 'GLOBAL').toUpperCase();
+      if (type === 'GLOBAL' || !flag.scope_id) global = flag;
+      else if (type === 'EMPLOYEE' && scopeMatches(flag, actor)) employeeScope = flag;
+      else if (type === 'BRANCH' && scopeMatches(flag, actor)) branchScope = flag;
+      else if (type === 'DEPARTMENT' && scopeMatches(flag, actor)) departmentScope = flag;
+    }
+    var resolved = employeeScope || branchScope || departmentScope || global;
+    return resolved ? Utils.asBoolean(resolved.enabled) : false;
+  }
+
+  /** Effective feature switches for the shell, including explicit scoped entries. */
+  function featureMap(actor) {
+    var output = {};
+    Database.getAllCached('Feature_Flags').forEach(function (flag) {
+      if (String(flag.status).toUpperCase() !== 'ACTIVE') return;
+      var type = String(flag.scope_type || 'GLOBAL').toUpperCase();
+      if (type === 'GLOBAL' || !flag.scope_id) output[flag.feature_key] = Utils.asBoolean(flag.enabled);
+      else output[flag.feature_key + '@' + type + ':' + flag.scope_id] = Utils.asBoolean(flag.enabled);
+    });
+    return output;
+  }
+
+  function scopeCeiling(first, second) {
+    return (SCOPE_RANK[first] === undefined ? 0 : SCOPE_RANK[first]) <= (SCOPE_RANK[second] === undefined ? 0 : SCOPE_RANK[second]) ? first : second;
   }
 
   function checkFields(actor, effective, fields, write, context) {
@@ -265,11 +303,19 @@ var Permissions = (function () {
       scopedGrants = effective.grants.filter(function (grant) {
         return grant.key === permissionKey && evaluateScope(actor, grant.scope, targetRecord, grant.conditions);
       });
-      if (!scopedGrants.length) deny(actor, permissionKey, targetRecord, { reason: 'SCOPE', entity: options.entity, context: options.context });
+      if (!scopedGrants.length) {
+        // Administrative entry points act on collections, not on one record. For
+        // modules the actor is allowed to administer, a grant at any scope is
+        // enough to reach the screen; row-level filtering still applies inside
+        // the handlers because canSeeEmployee() is checked per record.
+        var anyGrant = effective.grants.some(function (grant) { return grant.key === permissionKey; });
+        if (!anyGrant || !options.collection) deny(actor, permissionKey, targetRecord, { reason: 'SCOPE', entity: options.entity, context: options.context });
+        scopedGrants = [{ key: permissionKey, scope: 'Self', conditions: {} }];
+      }
     }
 
     checkFields(actor, effective, options.fields || [], Boolean(options.write), options.context);
-    if (!isFeatureEnabled(options.featureKey)) deny(actor, permissionKey, targetRecord, { reason: 'FEATURE', entity: options.entity, context: options.context });
+    if (!isFeatureEnabled(options.featureKey, actor)) deny(actor, permissionKey, targetRecord, { reason: 'FEATURE', entity: options.entity, context: options.context });
 
     if (options.makerChecker && targetRecord) {
       var maker = targetRecord.prepared_by || targetRecord.created_by;
@@ -280,6 +326,13 @@ var Permissions = (function () {
       deny(actor, permissionKey, targetRecord, { reason: 'CONDITION', entity: options.entity, context: options.context });
     }
     return { effective: effective, grants: scopedGrants };
+  }
+
+  /** Every permission the actor holds, for UI gating only (never authorisation). */
+  function permissionSet(actor) {
+    if (!actor || !actor.employeeId) return { isSuperAdmin: false, permissions: [] };
+    var effective = resolveEffectivePermissions(actor.employeeId);
+    return { isSuperAdmin: effective.isSuperAdmin, permissions: effective.permissions };
   }
 
   function maskSensitiveFields(record, actor, context) {
@@ -309,7 +362,11 @@ var Permissions = (function () {
     evaluateScope: evaluateScope,
     getDownlineEmployeeIds: getDownlineEmployeeIds,
     isFeatureEnabled: isFeatureEnabled,
+    featureMap: featureMap,
+    scopeCeiling: scopeCeiling,
+    VALID_SCOPES: VALID_SCOPES,
     check: check,
+    permissionSet: permissionSet,
     maskSensitiveFields: maskSensitiveFields
   };
 })();

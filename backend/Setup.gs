@@ -2,7 +2,7 @@
  * Idempotent owner-run bootstrap. No account is created unless the owner first
  * supplies SETUP_ADMIN_EMP_ID and SETUP_ADMIN_PASSWORD in Script Properties.
  */
-var HRMS_SCHEMA_VERSION = '1';
+var HRMS_SCHEMA_VERSION = '2';
 
 function setupSystem() {
   Utils.ensureServerPepper();
@@ -14,8 +14,13 @@ function setupSystem() {
   seedPermissionsCatalog(core);
   seedSuperAdminRole(core);
   seedSystemSettings(core);
+  Settings.ensureDefaults();
+  seedDefaultRoles(core);
+  seedDefaultLeaveTypes(core);
+  seedDefaultAttendanceSetup(core);
+  seedDefaultWorkflows(core);
   bootstrapFirstAdmin(core);
-  ensureFoundationTrigger();
+  ensureTriggers();
   Database.invalidateCache('Company_Settings');
   return {
     schemaVersion: HRMS_SCHEMA_VERSION,
@@ -127,6 +132,7 @@ function permissionCatalog() {
     ['attendance.view', 'Attendance', 'View', 'View attendance within scope.', false],
     ['attendance.correct', 'Attendance', 'Edit', 'Correct attendance before lock.', true],
     ['attendance.regularize.approve', 'Attendance', 'Approve', 'Approve attendance regularization.', false],
+    ['attendance.regularize.request', 'Attendance', 'Create', 'Raise an attendance regularization request.', false],
     ['attendance.lock', 'Attendance', 'Edit', 'Lock attendance for payroll.', true],
     ['attendance.export', 'Attendance', 'Export', 'Export attendance records.', true],
     ['attendance.policy.manage', 'Attendance', 'Edit', 'Manage attendance policies and shifts.', true],
@@ -206,6 +212,8 @@ function permissionCatalog() {
     ['settings.edit', 'System', 'Edit', 'Edit company settings and feature switches.', true],
     ['backup.create', 'System', 'Create', 'Create verified backups.', true],
     ['backup.restore', 'System', 'Edit', 'Restore from backup after a safety copy.', true],
+    ['asset.view', 'Assets', 'View', 'View the asset register and allocations.', false],
+    ['asset.manage', 'Assets', 'Edit', 'Create, allocate and return company assets.', true],
     ['announcement.view', 'System', 'View', 'View announcements.', false],
     ['announcement.manage', 'System', 'Edit', 'Publish announcements.', false]
   ];
@@ -334,15 +342,232 @@ function bootstrapFirstAdmin(spreadsheet) {
   properties.deleteProperty('SETUP_ADMIN_NAME');
 }
 
-function ensureFoundationTrigger() {
-  var functionName = 'runDailyFoundationMaintenance';
+function ensureTriggers() {
+  var required = [
+    { handler: 'runDailyFoundationMaintenance', builder: function () { return ScriptApp.newTrigger('runDailyFoundationMaintenance').timeBased().everyDays(1).atHour(2); } },
+    { handler: 'runMonthlyAccrual', builder: function () { return ScriptApp.newTrigger('runMonthlyAccrual').timeBased().onMonthDay(1).atHour(1); } },
+    { handler: 'runMonthlyPayrollReminder', builder: function () { return ScriptApp.newTrigger('runMonthlyPayrollReminder').timeBased().onMonthDay(26).atHour(9); } }
+  ];
   var triggers = ScriptApp.getProjectTriggers();
-  var exists = triggers.some(function (trigger) { return trigger.getHandlerFunction() === functionName; });
-  if (!exists) ScriptApp.newTrigger(functionName).timeBased().everyDays(1).atHour(2).create();
+  required.forEach(function (item) {
+    var exists = triggers.some(function (trigger) { return trigger.getHandlerFunction() === item.handler; });
+    if (!exists) item.builder().create();
+  });
+}
+
+/** Backwards-compatible alias used by the Phase 1 deployment guide. */
+function ensureFoundationTrigger() {
+  ensureTriggers();
+}
+
+function runMonthlyAccrual() {
+  return Maintenance.monthlyAccrual();
+}
+
+function runMonthlyPayrollReminder() {
+  return Maintenance.payrollReminder();
 }
 
 function runDailyFoundationMaintenance() {
   ensureAttendanceYear(new Date().getFullYear());
-  var cleaned = Auth.cleanupExpiredSessions();
-  Audit.logEvent('FOUNDATION_MAINTENANCE', 'SYSTEM', 'Sessions', '', 'SUCCESS', { expiredOrPurged: cleaned }, {});
+  Maintenance.daily();
+  Maintenance.autoLockPreviousMonth();
+  return { completedAt: Utils.nowIso() };
+}
+
+/** Starter roles. Every role and permission remains editable by the Super Admin. */
+function seedDefaultRoles(spreadsheet) {
+  var roles = [
+    {
+      code: 'HR_MANAGER', name: 'HR Manager', scope: 'Company',
+      description: 'Owns employee records, attendance, leave and documents.',
+      permissions: ['employee.view', 'employee.create', 'employee.edit', 'employee.export', 'field.salary.view', 'org.view',
+        'attendance.view', 'attendance.markothers', 'attendance.correct', 'attendance.lock', 'attendance.policy.manage',
+        'geofence.manage', 'leave.view', 'leave.manage', 'leave.approve', 'calendar.view', 'calendar.manage',
+        'document.view', 'document.generate', 'document.template.manage', 'document.hiring.view', 'document.employment.view',
+        'recruitment.view', 'recruitment.create', 'recruitment.edit', 'performance.view', 'performance.create',
+        'performance.edit', 'exit.view', 'exit.create', 'exit.edit', 'workflow.inbox', 'workflow.delegate',
+        'report.attendance.view', 'report.attendance.export', 'report.leave.view', 'report.leave.export',
+        'report.headcount.view', 'report.headcount.export', 'user.view', 'user.create', 'user.resetpassword',
+        'announcement.view', 'announcement.manage', 'asset.view', 'asset.manage']
+    },
+    {
+      code: 'PAYROLL_MANAGER', name: 'Payroll Manager', scope: 'Company',
+      description: 'Builds salary structures and prepares payroll runs.',
+      permissions: ['employee.view', 'field.salary.view', 'field.salary.edit', 'field.bank.view', 'field.govtid.view',
+        'salary.view', 'salary.create', 'salary.edit', 'payroll.prepare', 'payroll.view', 'payslip.view',
+        'payroll.statutory.export', 'payroll.ff.manage', 'advance.view', 'advance.approve', 'advance.disburse',
+        'expense.view', 'expense.approve', 'attendance.view', 'leave.view', 'workflow.inbox',
+        'report.payroll.view', 'report.payroll.export', 'report.attendance.view', 'document.payroll.view',
+        'document.generate', 'asset.view']
+    },
+    {
+      code: 'PAYROLL_APPROVER', name: 'Payroll Approver', scope: 'Company',
+      description: 'Verifies, approves and releases payroll prepared by another user.',
+      permissions: ['payroll.view', 'payroll.verify', 'payroll.approve', 'payroll.release', 'payroll.reopen',
+        'payslip.view', 'salary.view', 'report.payroll.view', 'report.payroll.export', 'workflow.inbox',
+        'expense.approve', 'advance.approve']
+    },
+    {
+      code: 'LINE_MANAGER', name: 'Line Manager', scope: 'Team',
+      description: 'Approves requests and reviews the performance of the team.',
+      permissions: ['employee.view', 'attendance.view', 'attendance.markothers', 'leave.view', 'leave.approve',
+        'expense.view', 'expense.approve', 'advance.view', 'performance.view', 'performance.edit',
+        'workflow.inbox', 'workflow.delegate', 'calendar.view', 'document.view', 'asset.view']
+    },
+    {
+      code: 'EMPLOYEE', name: 'Employee', scope: 'Self',
+      description: 'Self service: attendance, leave, payslips, documents and profile.',
+      permissions: ['employee.view', 'attendance.view', 'attendance.markself', 'attendance.regularize.approve',
+        'leave.view', 'leave.apply', 'calendar.view', 'payslip.view', 'advance.apply', 'advance.view',
+        'expense.apply', 'expense.view', 'document.view', 'document.generate', 'announcement.view',
+        'asset.view', 'workflow.inbox', 'performance.view']
+    },
+    {
+      code: 'RECRUITER', name: 'Recruiter', scope: 'Company',
+      description: 'Runs openings, candidates and interviews.',
+      permissions: ['recruitment.view', 'recruitment.create', 'recruitment.edit', 'employee.view',
+        'document.hiring.view', 'document.generate', 'workflow.inbox', 'report.headcount.view']
+    },
+    {
+      code: 'AUDITOR', name: 'Auditor', scope: 'Company',
+      description: 'Read-only access to records and audit trails.',
+      permissions: ['employee.view', 'attendance.view', 'leave.view', 'payroll.view', 'payslip.view',
+        'expense.view', 'advance.view', 'salary.view', 'document.view', 'exit.view', 'accesslog.view',
+        'report.attendance.view', 'report.leave.view', 'report.payroll.view', 'report.headcount.view']
+    }
+  ];
+  var sheet = spreadsheet.getSheetByName('Roles');
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var existing = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues() : [];
+  var codeColumn = headers.indexOf('role_code');
+  var known = {};
+  existing.forEach(function (row) { known[row[codeColumn]] = true; });
+  var now = Utils.nowIso();
+  roles.forEach(function (role) {
+    if (known[role.code]) return;
+    var record = {
+      id: 'role_' + role.code.toLowerCase(), role_code: role.code, name: role.name, description: role.description,
+      scope_type: role.scope, conditions_json: '{}', built_in: false,
+      created_at: now, updated_at: now, created_by: 'SETUP', updated_by: 'SETUP', status: 'ACTIVE'
+    };
+    sheet.getRange(sheet.getLastRow() + 1, 1, 1, headers.length).setValues([headers.map(function (header) {
+      return Utils.sanitizeForSheet(record[header]);
+    })]);
+    var permissionSheet = spreadsheet.getSheetByName('Role_Permissions');
+    var permissionHeaders = permissionSheet.getRange(1, 1, 1, permissionSheet.getLastColumn()).getValues()[0];
+    var rows = role.permissions.map(function (key) {
+      var permission = {
+        id: 'rp_' + role.code.toLowerCase() + '_' + key.replace(/[^a-z0-9]+/gi, '_'),
+        role_id: record.id, permission_key: key, conditions_json: '{}',
+        created_at: now, updated_at: now, created_by: 'SETUP', updated_by: 'SETUP', status: 'ACTIVE'
+      };
+      return permissionHeaders.map(function (header) { return Utils.sanitizeForSheet(permission[header]); });
+    });
+    if (rows.length) permissionSheet.getRange(permissionSheet.getLastRow() + 1, 1, rows.length, permissionHeaders.length).setValues(rows);
+  });
+  Database.invalidateCache('Roles');
+  Database.invalidateCache('Role_Permissions');
+}
+
+/** Starter leave types. Quotas are defaults the company must confirm. */
+function seedDefaultLeaveTypes(spreadsheet) {
+  var types = [
+    { code: 'EL', name: 'Earned Leave', rules: { annualQuota: 18, accrual: 'MONTHLY', carryForward: true, maxCarryForward: 10, encashable: true, requiresApproval: true, allowHalfDay: true, documentRequired: false, color: '#3157d5' } },
+    { code: 'CL', name: 'Casual Leave', rules: { annualQuota: 12, accrual: 'ANNUAL', carryForward: false, encashable: false, requiresApproval: true, allowHalfDay: true, maxPerApplication: 3, color: '#08756f' } },
+    { code: 'SL', name: 'Sick Leave', rules: { annualQuota: 12, accrual: 'ANNUAL', carryForward: false, encashable: false, requiresApproval: true, allowHalfDay: true, documentRequired: true, color: '#b45309' } },
+    { code: 'ML', name: 'Maternity Leave', rules: { annualQuota: 182, accrual: 'NONE', carryForward: false, encashable: false, requiresApproval: true, allowHalfDay: false, gender: 'FEMALE', documentRequired: true, maxPerApplication: 182, color: '#7c3aed' } },
+    { code: 'PL', name: 'Paternity Leave', rules: { annualQuota: 5, accrual: 'ANNUAL', carryForward: false, encashable: false, requiresApproval: true, allowHalfDay: false, gender: 'MALE', color: '#0e7490' } },
+    { code: 'LOP', name: 'Loss of Pay', rules: { annualQuota: 0, accrual: 'NONE', carryForward: false, encashable: false, requiresApproval: true, allowHalfDay: true, color: '#b42335' } }
+  ];
+  var sheet = spreadsheet.getSheetByName('Leave_Types');
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var existing = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues() : [];
+  var codeColumn = headers.indexOf('code');
+  var known = {};
+  existing.forEach(function (row) { known[row[codeColumn]] = true; });
+  var now = Utils.nowIso();
+  var rows = types.filter(function (type) { return !known[type.code]; }).map(function (type) {
+    var record = {
+      id: 'leave_' + type.code.toLowerCase(), code: type.code, name: type.name,
+      rules_json: JSON.stringify(type.rules), description: '',
+      created_at: now, updated_at: now, created_by: 'SETUP', updated_by: 'SETUP', status: 'ACTIVE'
+    };
+    return headers.map(function (header) { return Utils.sanitizeForSheet(record[header]); });
+  });
+  if (rows.length) sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
+  Database.invalidateCache('Leave_Types');
+}
+
+/** A default shift and attendance policy so the module works out of the box. */
+function seedDefaultAttendanceSetup(spreadsheet) {
+  var now = Utils.nowIso();
+  var shiftSheet = spreadsheet.getSheetByName('Shifts');
+  if (!Database.getAll('Shifts').length) {
+    var headers = shiftSheet.getRange(1, 1, 1, shiftSheet.getLastColumn()).getValues()[0];
+    var record = {
+      id: 'shift_general', name: 'General Shift (9:30 - 18:30)', start_time: '09:30', end_time: '18:30',
+      is_default: true, break_minutes: 60, grace_minutes: 10, rules_json: JSON.stringify({ breakMinutes: 60 }),
+      created_at: now, updated_at: now, created_by: 'SETUP', updated_by: 'SETUP', status: 'ACTIVE'
+    };
+    shiftSheet.getRange(shiftSheet.getLastRow() + 1, 1, 1, headers.length).setValues([headers.map(function (header) {
+      return Utils.sanitizeForSheet(record[header]);
+    })]);
+    Database.invalidateCache('Shifts');
+  }
+  var policySheet = spreadsheet.getSheetByName('Attendance_Policies');
+  if (!Database.getAll('Attendance_Policies').length) {
+    var policyHeaders = policySheet.getRange(1, 1, 1, policySheet.getLastColumn()).getValues()[0];
+    var policy = {
+      id: 'policy_standard', name: 'Standard Attendance Policy', policy_type: 'DAILY', is_default: true,
+      settings_json: JSON.stringify({ shiftId: 'shift_general', requireLocation: true, requireSelfie: false }),
+      created_at: now, updated_at: now, created_by: 'SETUP', updated_by: 'SETUP', status: 'ACTIVE'
+    };
+    policySheet.getRange(policySheet.getLastRow() + 1, 1, 1, policyHeaders.length).setValues([policyHeaders.map(function (header) {
+      return Utils.sanitizeForSheet(policy[header]);
+    })]);
+    Database.invalidateCache('Attendance_Policies');
+  }
+}
+
+/** Published starter workflows so approvals work immediately after setup. */
+function seedDefaultWorkflows(spreadsheet) {
+  var definitions = [
+    { type: 'leave', name: 'Leave approval (manager)', steps: [{ rule: { type: 'reporting_manager', fallbackRole: 'HR_MANAGER' }, slaHours: 48 }] },
+    { type: 'regularization', name: 'Attendance regularization (manager)', steps: [{ rule: { type: 'reporting_manager', fallbackRole: 'HR_MANAGER' }, slaHours: 24 }] },
+    { type: 'expense', name: 'Expense reimbursement (manager)', steps: [{ rule: { type: 'reporting_manager', fallbackRole: 'FINANCE_MANAGER' }, slaHours: 72 }] },
+    { type: 'advance', name: 'Advance or loan (manager then finance)', steps: [
+      { rule: { type: 'reporting_manager', fallbackRole: 'HR_MANAGER' }, slaHours: 48 },
+      { rule: { type: 'permission', permission: 'advance.approve' }, slaHours: 48 }
+    ] },
+    { type: 'salary_revision', name: 'Salary revision (payroll manager)', steps: [{ rule: { type: 'permission', permission: 'salary.revise' }, slaHours: 120 }] },
+    { type: 'document', name: 'Document issue (HR)', steps: [{ rule: { type: 'permission', permission: 'document.generate' }, slaHours: 48 }] },
+    { type: 'offer', name: 'Offer approval (HR head)', steps: [{ rule: { type: 'permission', permission: 'recruitment.approve' }, slaHours: 48 }] },
+    { type: 'exit', name: 'Exit approval (manager then HR)', steps: [
+      { rule: { type: 'reporting_manager', fallbackRole: 'HR_MANAGER' }, slaHours: 48 },
+      { rule: { type: 'permission', permission: 'exit.approve' }, slaHours: 72 }
+    ] },
+    { type: 'employee_change', name: 'Employee profile change (HR)', steps: [{ rule: { type: 'permission', permission: 'employee.edit' }, slaHours: 72 }] },
+    { type: 'performance', name: 'Performance review (manager)', steps: [{ rule: { type: 'reporting_manager', fallbackRole: 'HR_MANAGER' }, slaHours: 168 }] }
+  ];
+  var existing = Database.getAll('Workflow_Definitions');
+  var known = {};
+  existing.forEach(function (row) { known[row.request_type] = true; });
+  var now = Utils.nowIso();
+  definitions.forEach(function (definition) {
+    if (known[definition.type]) return;
+    var record = Database.insert('Workflow_Definitions', {
+      request_type: definition.type, version: 1, name: definition.name,
+      definition_json: JSON.stringify({ steps: definition.steps }), published_at: now, status: 'ACTIVE'
+    }, 'SETUP');
+    definition.steps.forEach(function (step, index) {
+      Database.insert('Workflow_Steps', {
+        workflow_id: record.id, step_number: index + 1, step_type: 'APPROVAL',
+        approver_rule_json: JSON.stringify(step.rule), conditions_json: '{}',
+        sla_hours: step.slaHours, escalation_json: '{}'
+      }, 'SETUP');
+    });
+  });
+  Database.invalidateCache('Workflow_Definitions');
+  Database.invalidateCache('Workflow_Steps');
 }

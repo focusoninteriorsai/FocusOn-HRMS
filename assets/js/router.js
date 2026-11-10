@@ -83,6 +83,7 @@ async function renderRoute(sequence, requestedPath, route) {
     container.replaceChildren(emptyState(t('errors.pageTitle'), error.message || t('errors.SERVER'), 'alert'));
   }
   if (sequence === navigationSequence) {
+    document.dispatchEvent(new CustomEvent('focuson:data-changed'));
     document.title = `${route.title ? `${t(route.title)} · ` : ''}${getState().branding.companyName}`;
     const heading = container.querySelector('h1');
     if (heading) {

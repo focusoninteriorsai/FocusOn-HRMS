@@ -23,7 +23,7 @@ var Database = (function () {
     core('Users', [
       ['employee_id', 'string', 64], ['password_hash', 'string', 256], ['password_salt', 'string', 128],
       ['password_iterations', 'integer'], ['must_change_password', 'boolean'], ['password_changed_at', 'datetime'],
-      ['language', 'string', 8], ['theme', 'string', 16], ['simple_mode', 'boolean']
+      ['language', 'string', 8], ['theme', 'string', 16], ['simple_mode', 'boolean'], ['last_login_at', 'datetime']
     ], ['employee_id', 'password_hash', 'password_salt']);
     core('Employees', [
       ['employee_id', 'string', 64], ['display_name', 'string', 160], ['first_name', 'string', 100], ['last_name', 'string', 100],
@@ -34,11 +34,18 @@ var Database = (function () {
       ['date_of_birth', 'date'], ['gender', 'string', 60], ['photo_file_id', 'string', 256],
       ['bank_account_number', 'string', 128], ['bank_ifsc', 'string', 32], ['bank_name', 'string', 160],
       ['pan_number', 'string', 64], ['aadhaar_number', 'string', 64], ['pf_uan', 'string', 64], ['esi_number', 'string', 64],
-      ['medical_notes', 'string', 4000], ['blood_group', 'string', 16], ['ctc_annual', 'number'], ['basic_salary', 'number'], ['gross_salary', 'number']
+      ['medical_notes', 'string', 4000], ['blood_group', 'string', 16], ['ctc_annual', 'number'], ['basic_salary', 'number'], ['gross_salary', 'number'],
+      ['employment_type', 'string', 60], ['employment_status', 'string', 40], ['shift_id', 'string', 128],
+      ['probation_end_date', 'date'], ['confirmation_date', 'date'], ['exit_date', 'date'], ['notice_period_days', 'number'],
+      ['emergency_contact_name', 'string', 160], ['emergency_contact_phone', 'string', 32], ['emergency_contact_relation', 'string', 80],
+      ['current_address', 'string', 1000], ['permanent_address', 'string', 1000], ['qualification', 'string', 300],
+      ['date_of_marriage', 'date'], ['spouse_name', 'string', 160], ['father_name', 'string', 160], ['mother_name', 'string', 160],
+      ['nationality', 'string', 80], ['bank_branch', 'string', 160], ['uan_number', 'string', 64], ['esi_ip_number', 'string', 64],
+      ['tax_regime', 'string', 40], ['notes', 'string', 4000], ['resignation_date', 'date'], ['last_working_date', 'date']
     ], ['display_name']);
-    core('Departments', [['code', 'string', 64], ['name', 'string', 160], ['head_employee_id', 'string', 64], ['branch_id', 'string', 128]], ['code', 'name']);
-    core('Designations', [['code', 'string', 64], ['name', 'string', 160], ['level', 'integer']], ['code', 'name']);
-    core('Branches', [['code', 'string', 64], ['name', 'string', 160], ['address', 'string', 1000], ['timezone', 'string', 80]], ['code', 'name']);
+    core('Departments', [['code', 'string', 64], ['name', 'string', 160], ['head_employee_id', 'string', 64], ['branch_id', 'string', 128], ['description', 'string', 1000]], ['code', 'name']);
+    core('Designations', [['code', 'string', 64], ['name', 'string', 160], ['level', 'integer'], ['description', 'string', 1000]], ['code', 'name']);
+    core('Branches', [['code', 'string', 64], ['name', 'string', 160], ['address', 'string', 1000], ['timezone', 'string', 80], ['city', 'string', 120], ['state', 'string', 120], ['pincode', 'string', 20], ['head_employee_id', 'string', 64], ['phone', 'string', 32], ['email', 'string', 254]], ['code', 'name']);
 
     core('Roles', [['role_code', 'string', 80], ['name', 'string', 160], ['description', 'string', 1000], ['scope_type', 'string', 40], ['conditions_json', 'json', 8000], ['built_in', 'boolean']], ['role_code', 'name', 'scope_type']);
     core('Permissions_Catalog', [['permission_key', 'string', 160], ['module', 'string', 100], ['action', 'string', 100], ['description', 'string', 1000], ['sensitive', 'boolean']], ['permission_key', 'module', 'action']);
@@ -54,30 +61,30 @@ var Database = (function () {
     core('Approvals', [['request_type', 'string', 100], ['request_id', 'string', 128], ['workflow_id', 'string', 128], ['workflow_version', 'integer'], ['requester_employee_id', 'string', 64], ['current_step', 'integer'], ['payload_json', 'json', 30000], ['due_at', 'datetime']], ['request_type', 'request_id', 'requester_employee_id']);
     core('Approval_Actions', [['approval_id', 'string', 128], ['step_number', 'integer'], ['approver_employee_id', 'string', 64], ['action', 'string', 40], ['comment', 'string', 4000], ['acted_at', 'datetime']], ['approval_id', 'step_number', 'action']);
 
-    core('Attendance_Policies', [['name', 'string', 160], ['policy_type', 'string', 80], ['settings_json', 'json', 20000]], ['name', 'policy_type']);
+    core('Attendance_Policies', [['name', 'string', 160], ['policy_type', 'string', 80], ['settings_json', 'json', 20000], ['is_default', 'boolean']], ['name', 'policy_type']);
     core('Geofence_Locations', [['branch_id', 'string', 128], ['name', 'string', 160], ['latitude', 'number'], ['longitude', 'number'], ['radius_meters', 'number'], ['minimum_accuracy_meters', 'number'], ['checkout_enabled', 'boolean'], ['outside_behavior', 'string', 40], ['gps_denied_behavior', 'string', 40], ['checkin_window_json', 'json', 4000]], ['branch_id', 'name', 'latitude', 'longitude', 'radius_meters']);
-    core('Shifts', [['name', 'string', 160], ['start_time', 'string', 8], ['end_time', 'string', 8], ['rules_json', 'json', 16000]], ['name']);
-    core('Leave_Types', [['code', 'string', 64], ['name', 'string', 160], ['rules_json', 'json', 20000]], ['code', 'name']);
-    core('Leave_Applications', [['employee_id', 'string', 64], ['leave_type_id', 'string', 128], ['start_date', 'date'], ['end_date', 'date'], ['half_day', 'boolean'], ['reason', 'string', 4000], ['attachment_file_id', 'string', 256], ['approval_id', 'string', 128]], ['employee_id', 'leave_type_id', 'start_date', 'end_date', 'reason']);
+    core('Shifts', [['name', 'string', 160], ['start_time', 'string', 8], ['end_time', 'string', 8], ['rules_json', 'json', 16000], ['is_default', 'boolean'], ['break_minutes', 'number'], ['grace_minutes', 'number']], ['name']);
+    core('Leave_Types', [['code', 'string', 64], ['name', 'string', 160], ['rules_json', 'json', 20000], ['description', 'string', 1000]], ['code', 'name']);
+    core('Leave_Applications', [['employee_id', 'string', 64], ['leave_type_id', 'string', 128], ['start_date', 'date'], ['end_date', 'date'], ['half_day', 'boolean'], ['half_day_period', 'string', 40], ['total_days', 'number'], ['reason', 'string', 4000], ['contact_during_leave', 'string', 100], ['handover_to', 'string', 64], ['decided_at', 'datetime'], ['attachment_file_id', 'string', 256], ['approval_id', 'string', 128]], ['employee_id', 'leave_type_id', 'start_date', 'end_date', 'reason']);
     core('Leave_Balances', [['employee_id', 'string', 64], ['leave_type_id', 'string', 128], ['year', 'integer'], ['ledger_json', 'json', 30000], ['balance_days', 'number']], ['employee_id', 'leave_type_id', 'year']);
-    core('Holidays', [['branch_id', 'string', 128], ['name', 'string', 160], ['holiday_date', 'date'], ['holiday_type', 'string', 60]], ['name', 'holiday_date']);
-    core('Sites', [['code', 'string', 64], ['name', 'string', 160], ['branch_id', 'string', 128], ['address', 'string', 1000]], ['code', 'name']);
+    core('Holidays', [['branch_id', 'string', 128], ['name', 'string', 160], ['holiday_date', 'date'], ['holiday_type', 'string', 60], ['description', 'string', 1000]], ['name', 'holiday_date']);
+    core('Sites', [['code', 'string', 64], ['name', 'string', 160], ['branch_id', 'string', 128], ['address', 'string', 1000], ['latitude', 'number'], ['longitude', 'number'], ['radius_meters', 'number'], ['client_name', 'string', 160], ['contact_person', 'string', 160], ['contact_phone', 'string', 32]], ['code', 'name']);
     core('Employee_Site_Assignment', [['employee_id', 'string', 64], ['site_id', 'string', 128], ['valid_from', 'date'], ['valid_until', 'date']], ['employee_id', 'site_id', 'valid_from']);
 
     core('Salary_Structure', [['employee_id', 'string', 64], ['effective_from', 'date'], ['effective_to', 'date'], ['salary_type', 'string', 60], ['payable_days_divisor', 'number'], ['components_json', 'json', 30000]], ['employee_id', 'effective_from', 'salary_type']);
     core('Salary_Components', [['code', 'string', 64], ['name', 'string', 160], ['component_type', 'string', 40], ['taxable', 'boolean'], ['statutory_wage', 'boolean'], ['formula_json', 'json', 8000]], ['code', 'name', 'component_type']);
     core('Salary_Revisions', [['employee_id', 'string', 64], ['structure_id', 'string', 128], ['effective_from', 'date'], ['approval_id', 'string', 128], ['arrears_json', 'json', 16000]], ['employee_id', 'structure_id', 'effective_from']);
-    core('Loans_Advances', [['employee_id', 'string', 64], ['request_type', 'string', 40], ['principal_amount', 'number'], ['emi_amount', 'number'], ['emi_count', 'integer'], ['disbursed_amount', 'number'], ['approval_id', 'string', 128], ['ledger_json', 'json', 30000]], ['employee_id', 'request_type', 'principal_amount']);
+    core('Loans_Advances', [['employee_id', 'string', 64], ['request_type', 'string', 40], ['principal_amount', 'number'], ['emi_amount', 'number'], ['emi_count', 'integer'], ['disbursed_amount', 'number'], ['approval_id', 'string', 128], ['approval_state', 'string', 40], ['reason', 'string', 1000], ['ledger_json', 'json', 30000]], ['employee_id', 'request_type', 'principal_amount']);
     core('Payroll_Runs', [['period', 'string', 7], ['run_state', 'string', 40], ['prepared_by', 'string', 64], ['verified_by', 'string', 64], ['approved_by', 'string', 64], ['released_by', 'string', 64], ['reopen_reason', 'string', 4000], ['processing_cursor', 'integer']], ['period', 'run_state']);
-    core('Payroll', [['run_id', 'string', 128], ['employee_id', 'string', 64], ['period', 'string', 7], ['paid_days', 'number'], ['lop_days', 'number'], ['earnings_json', 'json', 30000], ['deductions_json', 'json', 30000], ['net_pay', 'number'], ['calculation_json', 'json', 40000]], ['run_id', 'employee_id', 'period']);
-    core('Payslips', [['run_id', 'string', 128], ['payroll_id', 'string', 128], ['employee_id', 'string', 64], ['period', 'string', 7], ['file_id', 'string', 256], ['released_at', 'datetime']], ['run_id', 'payroll_id', 'employee_id', 'period']);
-    core('Expenses', [['employee_id', 'string', 64], ['expense_date', 'date'], ['category', 'string', 100], ['amount', 'number'], ['description', 'string', 4000], ['receipt_file_id', 'string', 256], ['approval_id', 'string', 128]], ['employee_id', 'expense_date', 'amount']);
-    core('Recruitment', [['opening_code', 'string', 64], ['title', 'string', 200], ['department_id', 'string', 128], ['headcount', 'integer'], ['opening_date', 'date'], ['closing_date', 'date']], ['opening_code', 'title']);
-    core('Candidates', [['opening_id', 'string', 128], ['name', 'string', 160], ['email', 'string', 254], ['phone', 'string', 32], ['stage', 'string', 80], ['interview_json', 'json', 16000], ['onboarding_json', 'json', 16000]], ['opening_id', 'name']);
-    core('Performance', [['cycle_id', 'string', 128], ['employee_id', 'string', 64], ['cycle_name', 'string', 160], ['goals_json', 'json', 30000], ['review_json', 'json', 30000], ['reviewer_employee_id', 'string', 64]], ['employee_id', 'cycle_name']);
-    core('Exit_Records', [['employee_id', 'string', 64], ['resignation_date', 'date'], ['last_working_date', 'date'], ['reason', 'string', 4000], ['clearance_json', 'json', 30000], ['settlement_json', 'json', 30000], ['approval_id', 'string', 128]], ['employee_id']);
-    core('Documents', [['employee_id', 'string', 64], ['category', 'string', 100], ['document_number', 'string', 100], ['version', 'integer'], ['template_id', 'string', 128], ['file_id', 'string', 256], ['watermark', 'string', 40], ['approval_id', 'string', 128]], ['employee_id', 'category', 'document_number', 'file_id']);
-    core('Doc_Templates', [['name', 'string', 160], ['category', 'string', 100], ['google_doc_id', 'string', 256], ['placeholders_json', 'json', 16000], ['sensitive', 'boolean'], ['signatory_employee_id', 'string', 64]], ['name', 'category', 'google_doc_id']);
+    core('Payroll', [['run_id', 'string', 128], ['employee_id', 'string', 64], ['period', 'string', 7], ['paid_days', 'number'], ['lop_days', 'number'], ['earnings_json', 'json', 30000], ['deductions_json', 'json', 30000], ['gross_pay', 'number'], ['total_deductions', 'number'], ['net_pay', 'number'], ['calculation_json', 'json', 40000]], ['run_id', 'employee_id', 'period']);
+    core('Payslips', [['run_id', 'string', 128], ['payroll_id', 'string', 128], ['employee_id', 'string', 64], ['period', 'string', 7], ['document_number', 'string', 100], ['file_id', 'string', 256], ['released_at', 'datetime']], ['run_id', 'payroll_id', 'employee_id', 'period']);
+    core('Expenses', [['employee_id', 'string', 64], ['expense_date', 'date'], ['category', 'string', 100], ['amount', 'number'], ['description', 'string', 4000], ['receipt_file_id', 'string', 256], ['approval_id', 'string', 128], ['approval_state', 'string', 40], ['paid_at', 'datetime'], ['payment_reference', 'string', 128]], ['employee_id', 'expense_date', 'amount']);
+    core('Recruitment', [['opening_code', 'string', 64], ['title', 'string', 200], ['department_id', 'string', 128], ['designation_id', 'string', 128], ['branch_id', 'string', 128], ['headcount', 'integer'], ['employment_type', 'string', 60], ['experience_min', 'number'], ['experience_max', 'number'], ['salary_min', 'number'], ['salary_max', 'number'], ['hiring_manager_id', 'string', 64], ['description', 'string', 4000], ['requirements', 'string', 4000], ['priority', 'string', 40], ['opening_status', 'string', 40], ['opening_date', 'date'], ['closing_date', 'date']], ['opening_code', 'title']);
+    core('Candidates', [['opening_id', 'string', 128], ['name', 'string', 160], ['email', 'string', 254], ['phone', 'string', 32], ['stage', 'string', 80], ['source', 'string', 120], ['experience_years', 'number'], ['current_company', 'string', 160], ['current_ctc', 'number'], ['expected_ctc', 'number'], ['notice_period_days', 'number'], ['resume_file_id', 'string', 256], ['rating', 'number'], ['notes', 'string', 4000], ['converted_employee_id', 'string', 64], ['interview_json', 'json', 16000], ['onboarding_json', 'json', 16000]], ['opening_id', 'name']);
+    core('Performance', [['cycle_id', 'string', 128], ['employee_id', 'string', 64], ['cycle_name', 'string', 160], ['goals_json', 'json', 30000], ['review_json', 'json', 30000], ['review_state', 'string', 40], ['reviewer_employee_id', 'string', 64]], ['employee_id', 'cycle_name']);
+    core('Exit_Records', [['employee_id', 'string', 64], ['resignation_date', 'date'], ['last_working_date', 'date'], ['reason', 'string', 4000], ['exit_type', 'string', 60], ['exit_state', 'string', 40], ['completed_at', 'datetime'], ['clearance_json', 'json', 30000], ['settlement_json', 'json', 30000], ['approval_id', 'string', 128]], ['employee_id']);
+    core('Documents', [['employee_id', 'string', 64], ['category', 'string', 100], ['title', 'string', 160], ['document_number', 'string', 100], ['version', 'integer'], ['template_id', 'string', 128], ['file_id', 'string', 256], ['body_text', 'string', 28000], ['watermark', 'string', 40], ['expires_at', 'date'], ['note', 'string', 500], ['approval_id', 'string', 128]], ['employee_id', 'category', 'document_number']);
+    core('Doc_Templates', [['name', 'string', 160], ['category', 'string', 100], ['body', 'string', 28000], ['google_doc_id', 'string', 256], ['placeholders_json', 'json', 16000], ['sensitive', 'boolean'], ['signatory_employee_id', 'string', 64]], ['name', 'category']);
     core('Notifications', [['employee_id', 'string', 64], ['notification_type', 'string', 100], ['title', 'string', 300], ['body', 'string', 4000], ['read_at', 'datetime'], ['action_url', 'string', 500]], ['employee_id', 'title']);
     core('Audit_Logs', [['event_type', 'string', 120], ['actor_id', 'string', 64], ['target_entity', 'string', 100], ['target_id', 'string', 128], ['outcome', 'string', 40], ['req_id', 'string', 128], ['device_hash', 'string', 128], ['details_json', 'json', 30000]], ['event_type', 'actor_id', 'outcome']);
     core('Company_Settings', [['setting_key', 'string', 160], ['setting_value', 'string', 30000], ['category', 'string', 100], ['description', 'string', 1000]], ['setting_key', 'category']);
@@ -86,7 +93,12 @@ var Database = (function () {
     core('Integration_Log', [['integration', 'string', 60], ['operation', 'string', 100], ['source_file_name', 'string', 300], ['records_received', 'integer'], ['records_accepted', 'integer'], ['errors_json', 'json', 30000]], ['integration', 'operation']);
     core('API_Requests', [['req_id', 'string', 128], ['action', 'string', 160], ['actor_id', 'string', 64], ['response_json', 'json', 40000], ['completed_at', 'datetime'], ['expires_at', 'datetime']], ['req_id', 'action']);
 
-    attendance('Attendance', [['employee_id', 'string', 64], ['attendance_date', 'date'], ['shift_id', 'string', 128], ['check_in_at', 'datetime'], ['check_out_at', 'datetime'], ['work_minutes', 'integer'], ['inside_geofence', 'boolean'], ['distance_meters', 'number'], ['accuracy_meters', 'number'], ['raw_latitude', 'number'], ['raw_longitude', 'number'], ['selfie_file_id', 'string', 256], ['flags_json', 'json', 16000], ['marked_by', 'string', 64], ['lock_id', 'string', 128]], ['employee_id', 'attendance_date']);
+    core('Employee_Change_Requests', [['employee_id', 'string', 64], ['change_type', 'string', 60], ['target_entity', 'string', 100], ['target_id', 'string', 128], ['change_json', 'json', 30000], ['approval_id', 'string', 128], ['applied_at', 'datetime']], ['employee_id', 'change_type', 'change_json']);
+    core('Assets', [['asset_code', 'string', 64], ['name', 'string', 160], ['category', 'string', 100], ['serial_number', 'string', 128], ['purchase_date', 'date'], ['purchase_value', 'number'], ['assigned_employee_id', 'string', 64], ['assigned_at', 'date'], ['returned_at', 'date'], ['condition', 'string', 60], ['notes', 'string', 2000], ['history_json', 'json', 30000]], ['asset_code', 'name', 'category']);
+    core('Announcements', [['title', 'string', 300], ['body', 'string', 4000], ['audience', 'string', 120], ['audience_id', 'string', 128], ['published_at', 'datetime'], ['expires_at', 'datetime'], ['pinned', 'boolean']], ['title', 'body', 'audience']);
+    core('Attendance_Month_Locks', [['period', 'string', 7], ['locked_by', 'string', 64], ['locked_at', 'datetime'], ['unlock_reason', 'string', 4000]]);
+    attendance('Monthly_Attendance_Summary', [['employee_id', 'string', 64], ['period', 'string', 7], ['present_days', 'number'], ['absent_days', 'number'], ['leave_days', 'number'], ['half_days', 'number'], ['holiday_days', 'number'], ['weekend_days', 'number'], ['lop_days', 'number'], ['paid_days', 'number'], ['late_count', 'integer'], ['total_work_minutes', 'integer'], ['overtime_minutes', 'integer'], ['generated_at', 'datetime']], ['employee_id', 'period']);
+    attendance('Attendance', [['employee_id', 'string', 64], ['attendance_date', 'date'], ['attendance_state', 'string', 40], ['shift_id', 'string', 128], ['note', 'string', 500], ['check_in_at', 'datetime'], ['check_out_at', 'datetime'], ['work_minutes', 'integer'], ['inside_geofence', 'boolean'], ['distance_meters', 'number'], ['accuracy_meters', 'number'], ['raw_latitude', 'number'], ['raw_longitude', 'number'], ['selfie_file_id', 'string', 256], ['flags_json', 'json', 16000], ['marked_by', 'string', 64], ['lock_id', 'string', 128]], ['employee_id', 'attendance_date']);
     attendance('Attendance_Regularization', [['employee_id', 'string', 64], ['attendance_date', 'date'], ['requested_check_in_at', 'datetime'], ['requested_check_out_at', 'datetime'], ['reason', 'string', 4000], ['approval_id', 'string', 128], ['month_lock_id', 'string', 128]], ['employee_id', 'attendance_date', 'reason']);
     return schemas;
   }
@@ -362,6 +374,53 @@ var Database = (function () {
     return update(tabName, id, { status: 'DELETED' }, actorId, options);
   }
 
+  /** Raw sheet read used by backup, export and integrity checks. */
+  function readSheet(tabName) {
+    var sheet = getSheet(tabName);
+    var lastRow = sheet.getLastRow();
+    var lastColumn = sheet.getLastColumn();
+    if (lastRow < 1 || lastColumn < 1) return { headers: getSchema(tabName).headers.slice(), values: [] };
+    var values = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+    var headers = values[0].map(function (header) { return String(header); });
+    return { headers: headers, values: values.slice(1) };
+  }
+
+  /** Ensures a schema tab exists (used by migration and restore). */
+  function ensureTab(tabName) {
+    var schema = getSchema(tabName);
+    var spreadsheet = schema.file === 'ATTENDANCE' ? getAttendanceSpreadsheet() : getCoreSpreadsheet();
+    var sheet = spreadsheet.getSheetByName(tabName);
+    if (!sheet) sheet = spreadsheet.insertSheet(tabName);
+    var existing = sheet.getLastColumn() ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].filter(String) : [];
+    var missing = schema.headers.filter(function (header) { return existing.indexOf(header) < 0; });
+    if (missing.length) sheet.getRange(1, sheet.getLastColumn() + 1, 1, missing.length).setValues([missing]);
+    sheet.setFrozenRows(1);
+    return sheet;
+  }
+
+  /** Full-tab atomic replacement used only by a verified restore. */
+  function replaceSheet(tabName, records, actorId) {
+    return withLock(function () {
+      var sheet = ensureTab(tabName);
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+      var rows = (records || []).map(function (record) {
+        validateRecord(tabName, record, false);
+        var row = headers.map(function (header) { return Utils.sanitizeForSheet(record[header]); });
+        return row;
+      });
+      if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
+      if (rows.length) sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+      invalidateCache(tabName);
+      return rows.length;
+    });
+  }
+
+  /** High-throughput import insert that still validates every row. */
+  function appendRows(tabName, inputs, actorId) {
+    if (!inputs || !inputs.length) return [];
+    return batchInsert(tabName, inputs, actorId || 'IMPORT');
+  }
+
   function getSettingsMap() {
     var settings = {};
     getAllCached('Company_Settings').forEach(function (row) {
@@ -393,6 +452,10 @@ var Database = (function () {
     update: update,
     updateMany: updateMany,
     softDelete: softDelete,
+    readSheet: readSheet,
+    ensureTab: ensureTab,
+    replaceSheet: replaceSheet,
+    appendRows: appendRows,
     getSettingsMap: getSettingsMap,
     getSetting: getSetting
   };

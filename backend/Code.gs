@@ -1,6 +1,8 @@
-/** JSON Web App entry point and declarative action authorization registry. */
+/** JSON Web App entry point, rate limiting and declarative authorization dispatch. */
 
-function doGet() {
+function doGet(event) {
+  var parameters = (event && event.parameter) || {};
+  if (parameters.health) return jsonResponse({ ok: true, data: { status: 'ok', schema: HRMS_SCHEMA_VERSION }, reqId: null });
   return jsonResponse({ ok: true, data: { status: 'ok' }, reqId: null });
 }
 
@@ -10,7 +12,7 @@ function doPost(event) {
     if (!event || !event.postData || typeof event.postData.contents !== 'string' || !event.postData.contents) {
       Utils.fail('VALIDATION', 'A JSON request body is required.');
     }
-    if (event.postData.contents.length > 262144) Utils.fail('VALIDATION', 'The request body is too large.');
+    if (event.postData.contents.length > 524288) Utils.fail('VALIDATION', 'The request body is too large. Split large files.');
     var body;
     try { body = JSON.parse(event.postData.contents); } catch (error) { Utils.fail('VALIDATION', 'The request body is not valid JSON.'); }
     Utils.assertObject(body, 'request');
@@ -19,7 +21,7 @@ function doPost(event) {
     var action = Utils.requireString(body, 'action', { max: 160, pattern: /^[a-z][a-z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)+$/ });
     var payload = body.payload === undefined ? {} : body.payload;
     Utils.assertObject(payload, 'payload');
-    var context = makeRequestContext(payload, reqId);
+    var context = makeRequestContext(payload, reqId, action);
     delete payload.__client;
     var data = dispatchAction(action, body.token, payload, context);
     return jsonResponse(Utils.okResponse(data, reqId));
@@ -39,17 +41,19 @@ function jsonResponse(value) {
   return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function makeRequestContext(payload, reqId) {
+function makeRequestContext(payload, reqId, action) {
   var client = payload.__client && typeof payload.__client === 'object' ? payload.__client : {};
   var userAgent = typeof client.userAgent === 'string' ? client.userAgent.slice(0, 512) : '';
   var hasPepper = Boolean(PropertiesService.getScriptProperties().getProperty('AUTH_PEPPER'));
   return {
     reqId: reqId,
+    action: action || '',
     deviceHash: userAgent && hasPepper ? Utils.hashDevice(userAgent) : '',
     deviceSupplied: Boolean(userAgent)
   };
 }
 
+/** Legacy registry entries kept for backwards compatibility with Phase 1 clients. */
 function actionRegistry() {
   return {
     'public.config': {
@@ -79,54 +83,87 @@ function actionRegistry() {
     'auth.updatePreferences': {
       write: true, permission: null, fields: [], featureKey: null, allowPasswordChange: true,
       handler: function (payload, authentication, context) { return Auth.updatePreferences(authentication, payload, context); }
-    },
-    'dashboard.get': {
-      write: false, permission: null, fields: [], featureKey: null,
-      handler: function (payload, authentication) { return dashboardData(authentication); }
-    },
-    'profile.get': {
-      write: false, permission: 'employee.view', fields: [], featureKey: null, entity: 'Employees',
-      resolveTarget: function (payload, authentication) {
-        var requestedId = payload.employeeId ? Utils.normalizeEmployeeId(payload.employeeId) : authentication.actor.employeeId;
-        var employees = Database.getAllCached('Employees');
-        for (var i = 0; i < employees.length; i++) {
-          if (String(employees[i].employee_id || employees[i].id) === requestedId) return employees[i];
-        }
-        Utils.fail('NOT_FOUND', 'Employee record not found.');
-      },
-      handler: function (payload, authentication, context, target) { return profileData(target); }
     }
   };
 }
 
+function registryEntry(action) {
+  var legacy = actionRegistry();
+  if (legacy[action]) return legacy[action];
+  if (typeof Actions === 'undefined') return null;
+  var entry = Actions.registry[action];
+  if (!entry) return null;
+  var definition = {
+    write: Boolean(entry.write),
+    permission: entry.permission || null,
+    fields: entry.fields || [],
+    featureKey: entry.featureKey || null,
+    entity: entry.entity || '',
+    makerChecker: Boolean(entry.makerChecker),
+    collection: Boolean(entry.collection),
+    superAdminOnly: Boolean(entry.superAdminOnly),
+    handler: entry.handler
+  };
+  return definition;
+}
+
 function dispatchAction(action, token, payload, context) {
-  var definitions = actionRegistry();
-  var definition = definitions[action];
+  var definition = registryEntry(action);
   if (!definition) Utils.fail('NOT_FOUND', 'The requested API action does not exist.');
 
   var authentication = null;
-  var target = null;
   if (!definition.isPublic) {
     authentication = Auth.authenticate(token, context);
+    enforceRequestThrottle(authentication.actor.employeeId, action);
     if (authentication.actor.mustChangePassword && !definition.allowPasswordChange) {
       Utils.fail('FORBIDDEN', 'A password change is required before using this action.');
     }
-    if (definition.resolveTarget) target = definition.resolveTarget(payload, authentication);
+    if (Settings.bool('MAINTENANCE_MODE', false) && !authentication.actor.isSuperAdmin) {
+      Utils.fail('LOCKED', 'The system is in maintenance mode. Try again later.', { retryAfterSeconds: 300 });
+    }
+    if (definition.superAdminOnly && !authentication.actor.isSuperAdmin) {
+      Utils.fail('FORBIDDEN', 'Only a Super Admin can perform this action.');
+    }
     if (definition.permission) {
-      Permissions.check(authentication.actor, definition.permission, target, {
+      Permissions.check(authentication.actor, definition.permission, null, {
+        collection: definition.collection,
         entity: definition.entity,
         fields: definition.fields,
         write: definition.write,
         featureKey: definition.featureKey,
-        makerChecker: Boolean(definition.makerChecker),
-        condition: definition.condition ? definition.condition(payload, target) : {},
+        makerChecker: definition.makerChecker,
         context: context
       });
-    } else if (definition.featureKey && !Permissions.isFeatureEnabled(definition.featureKey)) {
-      Utils.fail('FORBIDDEN', 'This feature is disabled.');
+    } else if (definition.featureKey && !Permissions.isFeatureEnabled(definition.featureKey, authentication.actor)) {
+      Utils.fail('FORBIDDEN', 'This feature is disabled by the administrator.');
     }
+    return definition.handler(payload, authentication, context);
   }
-  return definition.handler(payload, authentication, context, target);
+  return definition.handler(payload, authentication, context);
+}
+
+/** Per-user request ceiling protects the shared Apps Script quota. */
+function enforceRequestThrottle(employeeId, action) {
+  var limit = Settings.number('API_REQUESTS_PER_MINUTE', 180);
+  var cache = CacheService.getScriptCache();
+  var minute = Utilities.formatDate(new Date(), 'UTC', 'yyyyMMddHHmm');
+  var key = 'REQ_V1_' + Utils.sha256(employeeId) + '_' + minute;
+  var current = Number(cache.get(key) || 0) + 1;
+  cache.put(key, String(current), 120);
+  if (current > limit) {
+    Utils.fail('RATE_LIMITED', 'Too many requests. Please slow down.', { retryAfterSeconds: 30 });
+  }
+  if (current === 1) {
+    // First request in the minute: opportunistically prune stale API_Requests rows.
+    try { pruneApiRequests(); } catch (error) { /* housekeeping is best effort */ }
+  }
+}
+
+function pruneApiRequests() {
+  var cutoff = Utils.addSeconds(new Date(), -3600);
+  Database.updateMany('API_Requests', function (row) {
+    return String(row.status).toUpperCase() === 'ACTIVE' && Utils.toIso(row.created_at) < cutoff;
+  }, { status: 'DELETED' }, 'SYSTEM');
 }
 
 function publicConfig() {
@@ -142,7 +179,9 @@ function publicConfig() {
       primaryColor: '#3157d5', accentColor: '#08756f', cornerRadius: 18,
       cardStyle: 'soft', density: 'comfortable', font: 'system'
     },
-    background: { type: 'gradient', preset: 'astra', overlayOpacity: 0, blur: 0 }
+    background: { type: 'gradient', preset: 'astra', overlayOpacity: 0, blur: 0 },
+    maintenanceMode: false,
+    version: HRMS_SCHEMA_VERSION
   };
   if (!PropertiesService.getScriptProperties().getProperty('HRMS_CORE_DB_ID')) return config;
   var settings = Database.getSettingsMap();
@@ -155,6 +194,7 @@ function publicConfig() {
   config.loginNotice = text('LOGIN_NOTICE', 1000);
   config.defaultLanguage = ['en', 'hi'].indexOf(settings.DEFAULT_LANGUAGE) >= 0 ? settings.DEFAULT_LANGUAGE : 'en';
   config.defaultTheme = ['light', 'dark'].indexOf(settings.DEFAULT_THEME) >= 0 ? settings.DEFAULT_THEME : 'light';
+  config.maintenanceMode = String(settings.MAINTENANCE_MODE || '').toUpperCase() === 'TRUE';
 
   var highlights = Utils.safeParseJson(settings.PUBLIC_FEATURE_HIGHLIGHTS, []);
   if (Array.isArray(highlights)) {
@@ -176,40 +216,14 @@ function publicConfig() {
   return config;
 }
 
-function dashboardData(authentication) {
-  var employee = authentication.employee;
-  return {
-    user: {
-      employeeId: authentication.actor.employeeId,
-      displayName: employee.display_name || authentication.actor.employeeId,
-      department: employee.department || '',
-      designation: employee.designation || '',
-      branch: employee.branch || ''
-    },
-    security: {
-      passwordChangedAt: Utils.toIso(authentication.user.password_changed_at),
-      permissionCount: authentication.effective.permissions.length
-    },
-    session: {
-      absoluteExpiresAt: Utils.toIso(authentication.sessionRecord.expires_at),
-      lastSeenAt: Utils.toIso(authentication.sessionRecord.last_seen_at)
-    }
-  };
-}
-
-function profileData(employee) {
-  return {
-    profile: {
-      employeeId: String(employee.employee_id || employee.id),
-      displayName: employee.display_name || '',
-      workEmail: employee.work_email || '',
-      mobile: employee.mobile || '',
-      department: employee.department || '',
-      designation: employee.designation || '',
-      branch: employee.branch || '',
-      reportingManagerId: employee.reporting_manager_id || '',
-      workLocationType: employee.work_location_type || '',
-      joiningDate: employee.joining_date || ''
-    }
-  };
+/** Kept for external triggers and manual menu use. */
+function onOpen() {
+  try {
+    var menu = SpreadsheetApp.getUi().createMenu('FOCUSON HRMS');
+    menu.addItem('Run setup / migration', 'setupSystem');
+    menu.addItem('Run daily maintenance', 'runDailyFoundationMaintenance');
+    menu.addToUi();
+  } catch (error) {
+    // Container-bound menus are unavailable in a standalone Web App project.
+  }
 }
