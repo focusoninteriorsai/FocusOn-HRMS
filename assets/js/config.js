@@ -1,7 +1,7 @@
 // The Apps Script Web App /exec URL is public configuration, never a secret.
 // Leave empty until deployment; no runtime URL override is accepted.
 export const CONFIG = Object.freeze({
-  API_URL: '',
+  API_URL: 'https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnRTuwsUfzvOHDvbb9CFt8CI8AiytLC5O5LlSce6Am8f7EABdvxVaJxC0IfLXbRGmMy_aUtX3NRI8wJq0gpgydj0N8qGNpxLfjIB3sqzj2VRxAExN_ZrZituegEFpIakx3RUch0sX-JCrY-3gkg7td1_0HHEPOliWqQ39v4RVwZK1teVXa85BkZN0YqaYb8lfMZDDroUKyxF3rr-ivv1bFS0_AsVaYDMh_bLBpNd1Dik0sg46deUwxNZrsd-iSkIhhrZcGgWNMGP9qX0jmm6Wdx7qFzkdg&lib=MMXYObIOyjoCeuPlJtZSklsIDDx8yuSIQ',
   APP_VERSION: '1.0.0-phase1',
   REQUEST_TIMEOUT_MS: 30000,
   MAX_READ_RETRIES: 2,
@@ -10,10 +10,10 @@ export const CONFIG = Object.freeze({
 });
 
 export function getApiUrl() {
-  if (https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnTY87tDrrXl4BVxGEORjODOo8MyzkYQE-AfMjJb21PWopYFZEHdp4IpEOcc-rOrGowwvfQCSyTxtg097DTLG9NETvD3I3W56opAe0uT1cGtrHsETtKdZQSdw4UFRt2FT79wp4fTBjFIzdmJKhgyNhVIcb3tb8NBlMDdCqfNEPUv10GkjLjqh5WFNj74URGO0gRWM-wsOMT7MH1FVTcFtXOa4c0JQno0wU3HFPmfGSFdzqe_V6Cv2PCPHpdY5XHTtrSH1UGnn18UvJO79W_V6Zlakrm8Mg&lib=MMXYObIOyjoCeuPlJtZSklsIDDx8yuSIQ) return '';
+  if (!CONFIG.API_URL) return '';
   let url;
   try {
-    url = new URL(https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnS9qxnauSA_YmBrNZZN69__iGM0DjAm9EXNFwdDCuFWb9UlUC6tFsA-GwTmhuQunePS2sT53CQP5sltqmAXo1gAIphyFPO6XLeXgl1R41kBiUFQoxqGJjPE4E--rF5ztnjwjraaOObJLYNGlKNKKGnaoxrFHkFV0hze2ZNj1HhyCNWDyK8G_b_49dgbEiGi4gVrG3-TSjE7zbCpBYnme6Cmxhq1v6HOINXgGaazFuovo_K9-yaj_I5s_V_jzKRMwNIv-X9ij5fRWfAQie0R5AXecCOV2g&lib=MMXYObIOyjoCeuPlJtZSklsIDDx8yuSIQ);
+    url = new URL(CONFIG.API_URL);
   } catch (error) {
     throw new Error('invalidApiUrl');
   }
