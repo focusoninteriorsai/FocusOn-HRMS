@@ -29,3 +29,6 @@ build/
 *.log
 coverage/
 .tmp/
+
+# Temporary syntax-check copies
+.tmpcheck/

@@ -11,7 +11,9 @@ var Auth = (function () {
       lockSeconds: boundedSetting('LOGIN_LOCK_MINUTES', 15, 1, 1440) * 60,
       globalPerMinute: boundedSetting('LOGIN_GLOBAL_MAX_PER_MINUTE', 100, 20, 1000),
       passwordMinLength: boundedSetting('PASSWORD_MIN_LENGTH', 12, 8, 64),
-      passwordComplexity: String(Database.getSetting('PASSWORD_REQUIRE_COMPLEXITY', 'TRUE')).toUpperCase() !== 'FALSE'
+      passwordComplexity: String(Database.getSetting('PASSWORD_REQUIRE_COMPLEXITY', 'TRUE')).toUpperCase() !== 'FALSE',
+      bindDevice: String(Database.getSetting('SESSION_BIND_DEVICE', 'TRUE')).toUpperCase() !== 'FALSE',
+      maxSuperAdmins: boundedSetting('MAX_SUPER_ADMINS', 3, 1, 20)
     };
   }
 
@@ -126,6 +128,7 @@ var Auth = (function () {
       device_hash: context.deviceHash || '',
       status: 'ACTIVE'
     }, employeeId);
+    Database.update('Users', user.id, { last_login_at: now.toISOString() }, employeeId);
     var response = buildSessionResponse(user, employee, sessionRecord, settings, false);
     response.token = rawToken;
     Audit.logEvent('LOGIN_SUCCESS', employeeId, 'Users', user.id, 'SUCCESS', {
@@ -152,7 +155,7 @@ var Auth = (function () {
       Database.update('Sessions', session.id, { status: 'EXPIRED', revoked_at: now.toISOString() }, session.employee_id);
       Utils.fail('SESSION_EXPIRED', 'Your session has expired. Sign in again.');
     }
-    if (session.device_hash && session.device_hash !== (context.deviceHash || '')) {
+    if (settings.bindDevice && session.device_hash && session.device_hash !== (context.deviceHash || '')) {
       Database.update('Sessions', session.id, { status: 'REVOKED', revoked_at: now.toISOString() }, session.employee_id);
       Utils.fail('SESSION_EXPIRED', 'Your session has expired. Sign in again.');
     }
@@ -275,6 +278,25 @@ var Auth = (function () {
     return { language: updated.language || 'en', theme: updated.theme || 'light' };
   }
 
+  /** Builds a new salted hash for user creation or an administrator reset. */
+  function buildPasswordCredential(password) {
+    var salt = Utils.generateSalt();
+    var iterations = Utils.configuredHashIterations();
+    return { password_salt: salt, password_iterations: iterations, password_hash: Utils.hashPassword(password, salt, iterations) };
+  }
+
+  /** Applies the configured password policy to an administrator-chosen password. */
+  function assertPasswordPolicy(password, settings) {
+    settings = settings || securitySettings();
+    if (typeof password !== 'string' || password.length < 8) Utils.fail('VALIDATION', 'A password is required.');
+    if (password.length > 128) Utils.fail('VALIDATION', 'Passwords cannot exceed 128 characters.');
+    if (password.length < settings.passwordMinLength) Utils.fail('VALIDATION', 'The password must contain at least ' + settings.passwordMinLength + ' characters.', { minLength: settings.passwordMinLength });
+    if (settings.passwordComplexity && !(/[a-z]/.test(password) && /[A-Z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9]/.test(password))) {
+      Utils.fail('VALIDATION', 'The password must include uppercase, lowercase, a number and a symbol.');
+    }
+    return true;
+  }
+
   function revokeUserSessions(employeeId, exceptTokenHash) {
     return Database.updateMany('Sessions', function (session) {
       return session.employee_id === employeeId && String(session.status).toUpperCase() === 'ACTIVE' && session.token_hash !== exceptTokenHash;
@@ -311,6 +333,9 @@ var Auth = (function () {
   return {
     login: login,
     authenticate: authenticate,
+    buildPasswordCredential: buildPasswordCredential,
+    assertPasswordPolicy: assertPasswordPolicy,
+    revokeUserSessions: revokeUserSessions,
     sessionResponse: sessionResponse,
     changePassword: changePassword,
     updatePreferences: updatePreferences,

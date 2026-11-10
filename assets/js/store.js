@@ -7,6 +7,10 @@ const state = {
   permissions: new Set(),
   scopes: {},
   session: null,
+  features: {},
+  company: { currency: '₹', name: 'FOCUSON HRMS', dateFormat: 'dd MMM yyyy' },
+  pendingApprovals: 0,
+  unreadNotifications: 0,
   branding: {
     companyName: 'FOCUSON HRMS',
     tagline: '',
@@ -42,6 +46,9 @@ export function clearSessionState() {
   state.permissions = new Set();
   state.scopes = {};
   state.session = null;
+  state.features = {};
+  state.pendingApprovals = 0;
+  state.unreadNotifications = 0;
   listeners.forEach((listener) => listener(state));
 }
 

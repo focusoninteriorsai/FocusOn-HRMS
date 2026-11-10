@@ -2,9 +2,9 @@
 
 FOCUSON HRMS is a no-build HR and payroll web application for a company of approximately 80 employees, designed to scale to 300. The frontend is a static, mobile-first ES-module application for GitHub Pages. The backend is a Google Apps Script JSON Web App using Google Sheets for data and private Google Drive folders for files.
 
-This branch currently contains **Phase 1: the production security and application foundation**. It deliberately does not show unfinished attendance, leave, payroll, recruitment, or other later-phase menus.
+This branch contains the **complete application**: the Phase 1 security foundation, the full module backend, and the desktop-grade module screens for every function listed in `docs/API.md`. Menus stay hidden unless the signed-in user holds the module permission *and* the module feature switch is on.
 
-## Phase 1 capabilities
+## Capabilities
 
 - Premium Astra landing/login interface, light/dark themes, responsive app shell, English/Hindi dictionaries, accessible forms/dialogs, reduced-motion support, and safe offline shell caching.
 - Employee ID + password login; no consumer Google login and no email login.
@@ -16,6 +16,19 @@ This branch currently contains **Phase 1: the production security and applicatio
 - Default-deny permission engine with explicit DENY precedence, multiple roles, ALLOW overrides with expiry, bounded delegations, seven scope types, field protection, feature switches, maker-checker, and conditions.
 - Declarative API action registry, safe public branding configuration, and consistent JSON error envelopes.
 - Real-data dashboard and self-profile page. Empty values are shown as “Not provided”; no demo employee, chart, payroll value, or statutory rate is seeded.
+
+### Modules
+
+| Area | Screens |
+| --- | --- |
+| Workspace | Dashboard with company snapshot, quick links and pending-approval badges; notifications centre |
+| People | Employees directory and editor, organization master (departments, designations, branches, sites, holidays), recruitment openings and candidate pipeline, performance goals and reviews, exit with clearance and settlement |
+| Time | Attendance (punch with optional geofence, monthly summary, day register, month close, corrections), leave (balances, applications, calendar, register, leave types) |
+| Pay | Payroll (salary index and structures, monthly runs through maker-checker, payslips, statutory report), expenses and advances, reports with CSV export |
+| Records | Documents register and templates, asset register and allocation, announcements |
+| Administration | Approval inbox with per-step decisions and workflow definitions, access administration (users, roles, overrides, delegations, feature switches, audit trail), settings (company, modules, system, self test, backups) |
+
+Every screen is server-authorised: navigation is a convenience only, and each action re-checks permission, scope, feature switch, maker-checker and record conditions.
 
 ## Architecture
 
@@ -43,15 +56,20 @@ The browser never receives a trusted role decision from storage or navigation st
 ```text
 index.html, 404.html, manifest.webmanifest, sw.js
 assets/
-  css/       Astra tokens, base, components, animations, pages
+  css/       Astra tokens, base, components, animations, pages, app modules
   i18n/      en.json, hi.json
   icons/     Neutral product icons
   js/        API, auth, router, store, i18n, theme, UI, geo/camera helpers
-  js/pages/  Dashboard, profile, password change, error pages
+  js/pages/  _kit.js shared page kit + one module per screen
 backend/
   appsscript.json
-  Code.gs, Utils.gs, Database.gs, Setup.gs
-  Auth.gs, Audit.gs, Permissions.gs
+  Code.gs, Actions.gs dispatcher and registry
+  Auth, Audit, Permissions, Database, Repo, Utils, Setup
+  Employees, Organization, Attendance, Leave, Payroll, Money, Documents,
+  Recruitment, Performance, Exit, Assets, Announcements, Reports, Workflow,
+  Notifications, Access, Settings, Backup, Maintenance
+tools/
+  smoke-test.js  in-memory Apps Script emulator with the full check suite
 docs/
   DEPLOYMENT.md, SECURITY.md, API.md
 ```
@@ -64,7 +82,7 @@ For local static inspection only, any ordinary static HTTP server can serve the 
 
 ## Assumptions and deliberate limits
 
-1. **Phased delivery:** only the Phase 1 actions listed in `docs/API.md` exist. Other modules return `NOT_FOUND` rather than presenting dead screens.
+1. **Single registry:** every action the browser may call is listed in `docs/API.md` and registered in `backend/Actions.gs`. Anything else returns `NOT_FOUND` rather than presenting a dead screen.
 2. **Setup identity:** the initial Super Admin’s display name defaults to the supplied Employee ID unless `SETUP_ADMIN_NAME` is provided. HR replaces this with real employee information in the Employees phase.
 3. **Safe technical defaults:** empty session/password settings use documented conservative defaults (30-minute idle, 12-hour absolute session, 12-character password with complexity). Statutory and organization settings have no invented defaults.
 4. **Device signal:** Apps Script Web Apps do not expose trusted client IP or User-Agent headers to `doPost`. The browser-supplied User-Agent is hashed as a secondary device signal, not treated as proof of identity. A browser UA change can require a new login.
@@ -75,8 +93,16 @@ For local static inspection only, any ordinary static HTTP server can serve the 
 9. **Offline privacy:** the service worker caches only an allowlist of static files. API calls, session data, employee data, Drive files, and non-GET requests are never cached.
 10. **Time zone:** the Apps Script manifest and displayed dates use Asia/Kolkata. Stored instants are ISO UTC strings; date-only fields remain ISO calendar dates.
 
-## Next phases
+## Verification
 
-Phase 2 adds access administration, organization, employees, workflow, and approval screens. Phase 3 adds attendance and leave. Phase 4 adds payroll, documents, notifications, and reports. Phase 5 completes recruitment, performance, exit, RDash, backup/restore, and the full self-test/audit package.
+```bash
+node tools/smoke-test.js
+```
 
-Stop here for review before typing **NEXT** for Phase 2.
+The suite boots the whole backend in memory against a Sheets/Drive emulator and exercises 119 checks across setup, authentication, sessions, permissions, employees, organization, attendance, leave, payroll, money, documents, recruitment, performance, exit, assets, announcements, reports, workflow, notifications, settings, backup/restore, self test, restricted-user enforcement and CSV import/export. It must stay green before any deployment.
+
+## Operating notes
+
+- Month close for attendance is a prerequisite for a payroll run; payroll then moves VERIFIED → APPROVED → RELEASED → CLOSED with maker-checker enforced on every transition.
+- Settings and module switches are read from the server on every sign-in and refreshed after any write, so a disabled module disappears without a reload.
+- Backups are full JSON snapshots in private Drive storage, checksum-verified, and restore requires the typed `RESTORE` confirmation plus a reason; a safety copy is always taken first.

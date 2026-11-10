@@ -13,8 +13,7 @@ export function renderForbidden(container) {
 
 function renderError(container, titleKey, descriptionKey) {
   const state = emptyState(t(titleKey), t(descriptionKey), 'alert');
-  const button = element('button', {
-    className: 'button button-primary',
+  const button = element('button', { className: 'button button-primary',
     type: 'button',
     text: t(getState().user ? 'common.backDashboard' : 'common.backLogin'),
     onclick: () => navigate(getState().user ? '/dashboard' : '/login')

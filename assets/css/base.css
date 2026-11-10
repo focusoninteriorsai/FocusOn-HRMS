@@ -127,3 +127,6 @@ p { margin-bottom: var(--space-4); }
   .form-input,
   .button { border-width: 2px; }
 }
+
+/* Password change form: fields stacked with a consistent rhythm. */
+.password-form { display: grid; gap: 1rem; max-width: 32rem; }

@@ -1,166 +1,297 @@
-# FOCUSON HRMS JSON API — Phase 1
+# FOCUSON HRMS API reference
+
+The browser talks to the Apps Script Web App with a single JSON contract.
 
 ## Transport
 
-Endpoint: the Apps Script Web App `/exec` URL configured in `assets/js/config.js`.
-
-- `GET`: minimal health response only.
-- `POST`: `Content-Type: text/plain;charset=utf-8` with JSON below. This avoids a CORS preflight unsupported by Apps Script Web Apps.
-
 ```json
-{
-  "action": "dashboard.get",
-  "token": "raw-session-token-or-null",
-  "payload": {},
-  "reqId": "browser-generated-uuid"
-}
+POST /exec   Content-Type: text/plain;charset=utf-8
+{"action":"leave.apply","token":"<session token>","payload":{...},"reqId":"<uuid>"}
 ```
 
-The frontend adds a reserved `payload.__client.userAgent` value. The server removes it before handler validation and retains only its keyed hash. It is a device signal, not a trusted network identity.
+Success: `{"ok":true,"data":{...},"reqId":"..."}`. Failure: `{"ok":false,"error":{"code":"VALIDATION","message":"...","details":{}},"reqId":"..."}`.
 
-Every response has the same envelope:
+Error codes: `AUTH_REQUIRED`, `SESSION_EXPIRED`, `FORBIDDEN`, `VALIDATION`, `NOT_FOUND`, `LOCKED`, `RATE_LIMITED`, `CONFLICT`, `SERVER`.
 
-```json
-{ "ok": true, "data": {}, "reqId": "same-request-id" }
-```
+Every action below is registered in `backend/Actions.gs`. Anything not registered returns `NOT_FOUND`; the frontend therefore cannot present a screen whose backend does not exist. `read`/`self` actions are non-mutating GET-style reads, `write` actions mutate and are audited.
 
-or:
+`self` actions need no permission key: they always operate on the caller's own records. `read`/`write` actions require the listed permission and re-check scope, feature switch, sensitive-field rules, maker-checker and role conditions on the server.
 
-```json
-{
-  "ok": false,
-  "error": { "code": "VALIDATION", "message": "Clear safe message", "details": {} },
-  "reqId": "same-request-id"
-}
-```
+Sensitive values (salary, PAN, Aadhaar, bank details, medical) are removed from a response unless the caller holds the corresponding field rule.
 
-Stable codes are `AUTH_REQUIRED`, `SESSION_EXPIRED`, `FORBIDDEN`, `VALIDATION`, `NOT_FOUND`, `LOCKED`, `RATE_LIMITED`, `CONFLICT`, and `SERVER`. Unexpected exceptions return `SERVER` without a stack or internal resource ID; the request ID is logged for administrator diagnosis. `LOCKED` and throttling responses can include `retryAfterSeconds`.
+## Access administration
 
-Unknown actions return `NOT_FOUND`. Protected actions validate the session and active User/Employee records before any handler executes. A user requiring a password change can call only session inspection, password change, preferences, and logout actions.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `access.bootstrap` | self | — |
+| `access.users` | read | `user.view` |
+| `access.createUser` | write | `user.create` |
+| `access.resetPassword` | write | `user.resetpassword` |
+| `access.setUserStatus` | write | `user.resetpassword` |
+| `access.sessions` | read | `user.view` |
+| `access.revokeSession` | self | — |
+| `access.roles` | read | `role.define` |
+| `access.saveRole` | write | `role.define` |
+| `access.saveRolePermissions` | write | `role.define` |
+| `access.deleteRole` | write | `role.define` |
+| `access.assignRole` | write | `role.assign` |
+| `access.unassignRole` | write | `role.assign` |
+| `access.employeeAccess` | read | `user.view` |
+| `access.saveOverride` | write | `override.grant` |
+| `access.deleteOverride` | write | `override.grant` |
+| `access.saveDelegation` | write | `workflow.delegate` |
+| `access.deleteDelegation` | write | `workflow.delegate` |
+| `access.auditLog` | read | `accesslog.view` |
+| `access.featureScopes` | read | `settings.view` |
+| `access.saveFeatureScope` | write | `settings.edit` |
+| `access.deleteFeatureScope` | write | `settings.edit` |
 
-## Public actions
+## Dashboard
 
-### `public.config`
+| Action | Type | Permission |
+| --- | --- | --- |
+| `dashboard.get` | self | — |
 
-Authentication: none. Read-only.
+## Self profile
 
-Payload: `{}`.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `profile.get` | self | — |
 
-Returns only allowlisted public presentation data:
+## Employees
 
-```json
-{
-  "companyName": "FOCUSON HRMS",
-  "tagline": "",
-  "logoUrl": "",
-  "loginNotice": "",
-  "featureHighlights": [],
-  "defaultLanguage": "en",
-  "defaultTheme": "light",
-  "themeTokens": {
-    "primaryColor": "#3157d5",
-    "accentColor": "#08756f",
-    "cornerRadius": 18,
-    "cardStyle": "soft",
-    "density": "comfortable",
-    "font": "system"
-  },
-  "background": { "type": "gradient", "preset": "astra", "overlayOpacity": 0, "blur": 0 }
-}
-```
+| Action | Type | Permission |
+| --- | --- | --- |
+| `employees.list` | read | `employee.view` |
+| `employees.detail` | read | `employee.view` |
+| `employees.create` | write | `employee.create` |
+| `employees.update` | write | `employee.edit` |
+| `employees.status` | write | `employee.delete` |
+| `employees.import` | write | `employee.create` |
+| `employees.export` | read | `employee.export` |
+| `employees.picker` | read | `employee.view` |
+| `employees.requestChange` | self | — |
+| `employees.myChanges` | self | — |
+| `employees.nextId` | read | `employee.create` |
 
-Values shown above are neutral fallback configuration, not employee data. Branding values are length-limited, theme values are allowlisted/validated, and the frontend renders all text with `textContent`. No internal setting, employee record, spreadsheet ID, or feature state is returned.
+## Organization
 
-### `auth.login`
+| Action | Type | Permission |
+| --- | --- | --- |
+| `org.list` | read | `org.view` |
+| `org.save` | write | `org.edit` |
+| `org.remove` | write | `org.delete` |
+| `org.tree` | read | `org.view` |
 
-Authentication: none, but per-account and global throttles apply. Writes a hashed session record and audit event.
+## Attendance
 
-Payload:
+| Action | Type | Permission |
+| --- | --- | --- |
+| `attendance.today` | self | — |
+| `attendance.markSelf` | self | — |
+| `attendance.register` | read | `attendance.view` |
+| `attendance.mark` | write | `attendance.markothers` |
+| `attendance.requestRegularization` | self | — |
+| `attendance.regularizations` | self | — |
+| `attendance.monthly` | self | — |
+| `attendance.lockMonth` | write | `attendance.lock` |
+| `attendance.unlockMonth` | write | `attendance.lock` |
 
-```json
-{ "employeeId": "REAL-COMPANY-ID", "password": "user-supplied-password" }
-```
+## Leave
 
-`REAL-COMPANY-ID` illustrates the field format only; it is not an account seeded by the application. On success, `data` contains:
+| Action | Type | Permission |
+| --- | --- | --- |
+| `leave.myLeave` | self | — |
+| `leave.apply` | self | — |
+| `leave.cancel` | self | — |
+| `leave.register` | read | `leave.view` |
+| `leave.saveType` | write | `leave.manage` |
+| `leave.adjustBalance` | write | `leave.manage` |
+| `leave.runAccrual` | write | `leave.manage` |
+| `leave.calendar` | self | — |
 
-- `token`: raw random session token returned only here; the server stores its SHA-256 hash.
-- `mustChangePassword`: boolean.
-- `effectivePermissions`: current permission-key union after DENY filtering.
-- `scopes`: permission-to-scope summary for shell convenience.
-- `user`: own Employee ID, display name, organization fields, role IDs, preferences, and Super Admin flag.
-- `session`: idle seconds, absolute expiry, last-seen time, and password policy.
+## Payroll
 
-Invalid, unknown, and inactive credentials receive the same `AUTH_REQUIRED` message. Repeated failures return `RATE_LIMITED`; lock and threshold values are company settings with documented safe defaults.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `payroll.salaryIndex` | read | `salary.view` |
+| `payroll.structureDetail` | read | `salary.view` |
+| `payroll.saveStructure` | write | `salary.edit` |
+| `payroll.requestRevision` | write | `salary.revise` |
+| `payroll.runs` | read | `payroll.view` |
+| `payroll.prepare` | write | `payroll.prepare` |
+| `payroll.runDetail` | read | `payroll.view` |
+| `payroll.verify` | write | `payroll.verify` |
+| `payroll.approve` | write | `payroll.approve` |
+| `payroll.release` | write | `payroll.release` |
+| `payroll.close` | write | `payroll.release` |
+| `payroll.reopen` | write | `payroll.reopen` |
+| `payroll.myPayslips` | self | — |
+| `payroll.payslip` | self | — |
+| `payroll.statutoryReport` | read | `payroll.view` |
 
-## Authenticated self-service actions
+## Expenses and advances
 
-These actions operate only on the session owner. They require no separate catalog permission because possession of a valid active session is the authorization boundary. Their payloads are strictly allowlisted by the handler.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `money.expenses` | self | — |
+| `money.submitExpense` | self | — |
+| `money.payExpense` | write | `advance.disburse` |
+| `money.loans` | self | — |
+| `money.requestLoan` | self | — |
+| `money.disburseLoan` | write | `advance.disburse` |
 
-### `auth.session`
+## Documents
 
-Read. Payload `{}`. Returns the same session/user shape as login but never returns the raw token.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `documents.list` | self | — |
+| `documents.saveTemplate` | write | `document.template.manage` |
+| `documents.generate` | self | — |
+| `documents.detail` | self | — |
+| `documents.upload` | self | — |
+| `documents.download` | self | — |
+| `documents.expiring` | read | `document.view` |
 
-### `auth.changePassword`
+## Recruitment
 
-Write. Payload:
+| Action | Type | Permission |
+| --- | --- | --- |
+| `recruitment.list` | read | `recruitment.view` |
+| `recruitment.openingDetail` | read | `recruitment.view` |
+| `recruitment.saveOpening` | write | `recruitment.edit` |
+| `recruitment.saveCandidate` | write | `recruitment.edit` |
+| `recruitment.moveStage` | write | `recruitment.edit` |
+| `recruitment.scheduleInterview` | write | `recruitment.edit` |
+| `recruitment.releaseOffer` | write | `recruitment.approve` |
+| `recruitment.convert` | write | `recruitment.approve` |
 
-```json
-{ "currentPassword": "current-secret", "newPassword": "new-secret" }
-```
+## Performance
 
-Verifies the current password and configured length/complexity, stores a fresh salt/work factor/hash, clears forced-change status, and revokes other sessions. Returns `{ "changed": true }`.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `performance.list` | self | — |
+| `performance.detail` | self | — |
+| `performance.openCycle` | write | `performance.create` |
+| `performance.saveGoals` | self | — |
+| `performance.selfReview` | self | — |
+| `performance.managerReview` | write | `performance.approve` |
 
-### `auth.updatePreferences`
+## Exit management
 
-Write. Payload can contain either or both:
+| Action | Type | Permission |
+| --- | --- | --- |
+| `exit.list` | self | — |
+| `exit.submit` | self | — |
+| `exit.updateClearance` | write | `exit.edit` |
+| `exit.settlement` | read | `exit.view` |
+| `exit.complete` | write | `exit.approve` |
 
-```json
-{ "language": "en", "theme": "dark" }
-```
+## Assets
 
-Language allows `en` or `hi`; theme allows `light` or `dark`. Returns the saved pair.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `assets.list` | read | `asset.view` |
+| `assets.myAssets` | self | — |
+| `assets.save` | write | `asset.manage` |
+| `assets.assign` | write | `asset.manage` |
+| `assets.return` | write | `asset.manage` |
 
-### `auth.logout`
+## Announcements
 
-Write. Payload `{}`. Revokes the current session. Returns `{ "loggedOut": true }`.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `announcements.list` | self | — |
+| `announcements.save` | write | `announcement.manage` |
+| `announcements.remove` | write | `announcement.manage` |
 
-### `auth.logoutAll`
+## Reports
 
-Write. Payload `{}`. Revokes all active sessions for the current Employee ID in one batch update. Returns `{ "loggedOut": true, "revokedCount": 1 }`; the count is the actual number changed.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `reports.generate` | self | — |
+| `reports.export` | self | — |
 
-### `dashboard.get`
+## Approvals
 
-Read. Payload `{}`. Returns only the current employee’s real organization fields, password-change timestamp, effective permission count, and current session timestamps. It does not fabricate company KPIs or charts.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `workflow.inbox` | read | `workflow.inbox` |
+| `workflow.detail` | self | — |
+| `workflow.decide` | self | — |
+| `workflow.definitions` | read | `workflow.define` |
+| `workflow.saveDefinition` | write | `workflow.define` |
 
-## Permission-protected actions
+## Notifications
 
-### `profile.get`
+| Action | Type | Permission |
+| --- | --- | --- |
+| `notifications.list` | self | — |
+| `notifications.markRead` | self | — |
 
-Read. Required permission: `employee.view`. Feature switch: none. Sensitive fields returned: none.
+## Settings
 
-Payload `{}` reads the caller’s profile. An optional `employeeId` selects another target only when the role’s server-resolved scope allows it; a Self-scoped user cannot bypass scope by changing the ID.
+| Action | Type | Permission |
+| --- | --- | --- |
+| `settings.get` | read | `settings.view` |
+| `settings.update` | write | `settings.edit` |
+| `settings.updateFeatures` | write | `settings.edit` |
 
-Returns `data.profile` with only:
+## System and maintenance
 
-- `employeeId`, `displayName`, `workEmail`, `mobile`
-- `department`, `designation`, `branch`, `reportingManagerId`
-- `workLocationType`, `joiningDate`
+| Action | Type | Permission |
+| --- | --- | --- |
+| `system.selfTest` | read | `settings.view` |
+| `system.runSetup` | write | `settings.edit` |
+| `system.runMaintenance` | write | `settings.edit` |
 
-Salary, bank, government-ID, personal email, birth, and medical fields are not returned by this Phase 1 action.
+## Backup and restore
 
-## Authorization registry
+| Action | Type | Permission |
+| --- | --- | --- |
+| `backup.list` | read | `backup.create` |
+| `backup.create` | write | `backup.create` |
+| `backup.verify` | write | `backup.create` |
+| `backup.restore` | write | `backup.restore` |
 
-Each entry in `Code.gs → actionRegistry()` declares public/authenticated status, read/write behavior, permission key, sensitive field rules, feature key, optional target/scope resolver, and handler. `Permissions.check()` then applies:
+## Request shapes for the common writes
 
-1. validated session and active user;
-2. explicit DENY;
-3. union of roles, active ALLOW overrides, and active delegations;
-4. permission presence (or built-in Super Admin);
-5. record scope;
-6. sensitive-field rule;
-7. feature switch;
-8. maker-checker;
-9. role/grant condition;
-10. handler and applicable audit write.
+Payload keys are validated server-side; unknown keys are ignored, missing required keys fail with `VALIDATION` and a `details.fields` map.
 
-Deny always beats allow. Feature flags are default-off when referenced but absent. Super Admin remains subject to explicit DENY, feature switches, sensitive DENY overrides, and maker-checker rules.
+| Action | Payload |
+| --- | --- |
+| `auth.login` | `{employeeId, password}` → `{token, mustChangePassword, effectivePermissions, scopes, user, session}` |
+| `employees.create` / `employees.update` | `{employeeId?, displayName, workEmail, mobile, departmentId, designation, branchId, reportingManagerId, joiningDate, employmentType, ...}` |
+| `employees.status` | `{employeeId, status:'ACTIVE'\|'INACTIVE', reason}` |
+| `org.save` | `{entity:'Departments'\|'Designations'\|'Branches'\|'Sites'\|'Holidays', id?, ...fields}` |
+| `attendance.markSelf` | `{action:'CHECK_IN'\|'CHECK_OUT', latitude?, longitude?, accuracy?}` |
+| `attendance.mark` | `{employeeId, date, checkInAt, checkOutAt, note}` |
+| `attendance.requestRegularization` | `{date, reason (≥10 chars)}` |
+| `attendance.lockMonth` / `unlockMonth` | `{month:'YYYY-MM', reason?}` |
+| `leave.apply` | `{leaveTypeId, startDate, endDate, halfDayPeriod, reason (≥5), contactDuringLeave, handoverTo, attachmentFileId}` |
+| `leave.saveType` | `{leaveTypeId?, code, name, annualQuota, ...}` |
+| `payroll.saveStructure` | `{employeeId, monthlyGross, payableDaysDivisor, components[]}` |
+| `payroll.prepare` | `{period:'YYYY-MM'}` |
+| `payroll.verify` / `approve` / `release` / `close` | `{runId}` |
+| `payroll.reopen` | `{runId, reason (≥10)}` |
+| `money.submitExpense` | `{amount, category, expenseDate, receiptFileId, description}` |
+| `documents.generate` | `{templateId?, employeeId, title, body?}` |
+| `recruitment.saveOpening` | `{openingId?, title, departmentId, headcount, priority, ...}` |
+| `recruitment.saveCandidate` | `{candidateId?, openingId, name, email, phone, stage, source, ...}` |
+| `recruitment.moveStage` | `{candidateId, stage}` |
+| `recruitment.convert` | `{candidateId, employeeId?, joiningDate, ...}` |
+| `performance.saveGoals` | `{reviewId, goals:[{text, weight, target}]}` (weights total 100) |
+| `performance.selfReview` / `managerReview` | `{reviewId, ratings, comments, strengths, improvements}` |
+| `exit.submit` | `{employeeId, exitType, resignationDate, lastWorkingDate, noticeDays}` |
+| `exit.updateClearance` | `{exitId, clearance:[{line, cleared}]}` |
+| `workflow.decide` | `{requestId, decision:'APPROVE'\|'REJECT'\|'RETURN'\|'OVERRIDE', comment, overrideReason?}` |
+| `workflow.saveDefinition` | `{requestType, replaceActive, steps:[{stepType, approverRule, roleCode?, permission?, employeeId?, slaHours}]}` |
+| `reports.generate` | `{type:'headcount'\|'attendance'\|'leave'\|'payroll'\|'expiry', month\|year}` |
+| `reports.export` | same as `reports.generate` → `{fileName, csv}` |
+| `settings.update` | `{values:{key:value}}` (unknown keys and `SCHEMA_VERSION` are rejected) |
+| `settings.updateFeatures` | `{features:{moduleKey:boolean}}` |
+| `notifications.markRead` | `{all:true}` or `{ids:[...]}` (or `{notificationId}`) |
+| `backup.create` | `{type}` |
+| `backup.verify` | `{backupId}` |
+| `backup.restore` | `{backupId, confirmation:'RESTORE', reason (≥15)}` |
+| `system.selfTest` | `{}` → `{score, passed, total, checks[]}` |

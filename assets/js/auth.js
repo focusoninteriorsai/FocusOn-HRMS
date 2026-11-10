@@ -10,7 +10,8 @@ function applySession(data) {
     mustChangePassword: Boolean(data.mustChangePassword),
     permissions: new Set(data.effectivePermissions || []),
     scopes: data.scopes || {},
-    session: data.session || null
+    session: data.session || null,
+    features: { ...getState().features, ...(data.features || {}) }
   });
 }
 
