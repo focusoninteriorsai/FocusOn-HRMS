@@ -251,6 +251,22 @@ var Backup = (function () {
       }
     })(), 'Writes a SELF_TEST audit event');
 
+    // Advisory: report the optional Google Workspace channels without failing the
+    // installation when a channel is intentionally switched off.
+    if (typeof Google !== 'undefined') {
+      var googleStatus = Google.status();
+      checks.push({
+        name: 'Google Workspace channels',
+        passed: true,
+        detail: 'Gmail ' + (googleStatus.mail.enabled ? 'on (' + googleStatus.mail.quota + ' left today)' : 'off') +
+          ', Calendar ' + (googleStatus.calendar.enabled ? 'on' : 'off') +
+          ', Chat ' + (googleStatus.chat.enabled ? 'on' : 'off') +
+          ', Contacts ' + (googleStatus.contacts.enabled ? 'on' : 'off') +
+          ', Tasks ' + (googleStatus.tasks.enabled ? 'on' : 'off') +
+          ', Docs ' + (googleStatus.docs.enabled ? 'on' : 'off')
+      });
+    }
+
     var passed = checks.filter(function (item) { return item.passed; }).length;
     return {
       checks: checks, passed: passed, failed: checks.length - passed, total: checks.length,

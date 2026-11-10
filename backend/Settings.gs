@@ -184,6 +184,18 @@ var Settings = (function () {
     def('NOTIFY_ANNOUNCEMENT', 'NOTIFICATIONS', 'Notify on announcements', 'boolean', 'TRUE', { group: 'Events' }),
     def('NOTIFICATION_RETENTION_DAYS', 'NOTIFICATIONS', 'Notification retention (days)', 'number', '180', { group: 'Retention', min: 30, max: 1095 }),
 
+    // ---------------- Google Workspace integration ----------------
+    def('MAIL_NOTIFICATIONS_ENABLED', 'NOTIFICATIONS', 'Send e-mail through Gmail (Workspace)', 'boolean', 'FALSE', { group: 'Google Workspace', help: 'Uses the deployment account Gmail quota. In-app notifications always continue.' }),
+    def('MAIL_SUBJECT_PREFIX', 'NOTIFICATIONS', 'E-mail subject prefix', 'text', '[FOCUSON HRMS]', { group: 'Google Workspace' }),
+    def('MAIL_DAILY_DIGEST', 'NOTIFICATIONS', 'Mail a daily digest to approvers', 'boolean', 'FALSE', { group: 'Google Workspace' }),
+    def('CALENDAR_SYNC_ENABLED', 'NOTIFICATIONS', 'Add approved leave to Google Calendar', 'boolean', 'FALSE', { group: 'Google Workspace' }),
+    def('CALENDAR_ID', 'NOTIFICATIONS', 'Calendar id', 'text', 'primary', { group: 'Google Workspace', help: 'primary, or the calendar id from Google Calendar settings.' }),
+    def('GOOGLE_CHAT_ENABLED', 'NOTIFICATIONS', 'Post to Google Chat', 'boolean', 'FALSE', { group: 'Google Workspace' }),
+    def('GOOGLE_CHAT_WEBHOOK_URL', 'NOTIFICATIONS', 'Google Chat webhook URL', 'url', '', { group: 'Google Workspace', help: 'Space → Apps & integrations → Webhooks. Keep this secret.' }),
+    def('CONTACTS_SYNC_ENABLED', 'NOTIFICATIONS', 'Sync employees to Google Contacts', 'boolean', 'FALSE', { group: 'Google Workspace', help: 'Needs the People advanced service.' }),
+    def('TASKS_SYNC_ENABLED', 'NOTIFICATIONS', 'Create Google Tasks for approvals', 'boolean', 'FALSE', { group: 'Google Workspace', help: 'Needs the Tasks advanced service.' }),
+    def('DOCS_EXPORT_ENABLED', 'NOTIFICATIONS', 'Render issued letters as Google Docs', 'boolean', 'TRUE', { group: 'Google Workspace' }),
+
     // ---------------- System ----------------
     def('SCHEMA_VERSION', 'SYSTEM', 'Schema version', 'text', '2', { group: 'Data' }),
     def('IMPORT_MAX_ROWS', 'SYSTEM', 'Maximum rows per import', 'number', '500', { group: 'Data', min: 10, max: 5000 }),

@@ -616,9 +616,33 @@ var Payroll = (function () {
           Notifications.push(record.employee_id, 'PAYROLL', 'Payslip available for ' + run.period,
             'Your payslip for ' + run.period + ' is ready to view and download.', 'payslips');
         }
+        mailPayslipNotice(record.employee_id, run.period);
       }
     });
     return released;
+  }
+
+  /** Gmail payslip notice. Best-effort: payroll release never waits on mail. */
+  function mailPayslipNotice(employeeId, period) {
+    try {
+      if (typeof Google === 'undefined' || !Google.mailEnabled()) return;
+      var to = Google.employeeEmail(employeeId);
+      if (!to) return;
+      var link = Google.appLink('/payslips');
+      Google.sendMail(to, 'Payslip available for ' + period, [
+        Repo.employeeName(employeeId) + ',',
+        '',
+        'Your payslip for ' + period + ' has been released and is available in the HRMS.',
+        link ? 'Open your payslips: ' + link : '',
+        '',
+        Settings.text('PAYSLIP_FOOTER_NOTE', 'This is a computer-generated payslip.')
+      ].filter(function (line) { return line !== ''; }).join('\n'), {
+        prefix: Settings.text('MAIL_SUBJECT_PREFIX', '[FOCUSON HRMS]') + ' '
+      });
+    } catch (error) {
+      Audit.logEvent('PAYSLIP_MAIL_FAILED', employeeId, 'Payslips', String(period || ''), 'FAILED',
+        { message: String(error && error.message).slice(0, 300) }, {});
+    }
   }
 
   function payslipNumber(period, employeeId) {

@@ -93,6 +93,7 @@ async function bootstrap() {
   cacheDom();
   registerRoutes();
   bindEvents();
+  applyHostedAssets();
   await initI18n();
   initTheme();
   await loadPublicConfiguration();
@@ -442,7 +443,23 @@ function handleSessionEnded(event) {
   else if (reason === 'logoutAll') showToast(t('app.loggedOutAll'), 'success');
 }
 
+/** Apps Script serves a single HTML page, so manifest and icons arrive inline. */
+function applyHostedAssets() {
+  const assets = globalThis.__FOCUSON_ASSETS__;
+  if (!assets) return;
+  if (assets.manifest) {
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = assets.manifest;
+    document.head.append(link);
+  }
+  [document.getElementById('public-brand-logo'), document.getElementById('app-brand-logo')].forEach((image) => {
+    if (image && assets.icons && assets.icons.length) image.src = assets.icons[0];
+  });
+}
+
 function registerOfflineShell() {
+  if (globalThis.google && google.script) return;
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
   navigator.serviceWorker.register('./sw.js').catch(() => {
     // The online application remains fully usable when offline-shell registration fails.

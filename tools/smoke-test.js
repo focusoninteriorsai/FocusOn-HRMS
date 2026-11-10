@@ -354,6 +354,114 @@ const ContentService = {
   }
 };
 
+/* ------------------------------------------- Google Workspace integrations */
+// Minimal emulators so the integration layer can be exercised without touching a
+// real mailbox, calendar or chat space. Each records what it was asked to do.
+const googleCalls = { mail: [], chat: [], calendar: [], tasks: [], contacts: [], docs: [] };
+
+const MailApp = {
+  sent: googleCalls.mail,
+  getRemainingDailyQuota() { return 100; },
+  sendEmail(message) {
+    if (!message || !message.to) throw new Error('MailApp: recipient required');
+    this.sent.push({ to: message.to, subject: message.subject, body: message.body, name: message.name });
+    return { getMessageId: () => 'msg_' + this.sent.length };
+  }
+};
+
+const calendarEvents = {};
+let calendarSeq = 0;
+function makeCalendar() {
+  return {
+    createAllDayEvent(title, start, options) {
+      const id = 'evt_' + (++calendarSeq);
+      calendarEvents[id] = { title, start, options };
+      return { getId: () => id, setAllDayDates() { return this; } };
+    },
+    getEventById(id) { return calendarEvents[id] ? { deleteEvent() { delete calendarEvents[id]; } } : null; }
+  };
+}
+const CalendarApp = {
+  getDefaultCalendar: makeCalendar,
+  getCalendarById: () => makeCalendar(),
+  events: calendarEvents
+};
+
+const UrlFetchApp = {
+  fetch(url, options) {
+    googleCalls.chat.push({ url, payload: JSON.parse((options && options.payload) || '{}') });
+    return { getResponseCode: () => 200, getContentText: () => '{}' };
+  }
+};
+
+const Tasks = {
+  Tasklists: { list: () => ({ items: [{ id: 'list_default' }] }) },
+  Tasks: { insert: (task, listId) => { googleCalls.tasks.push({ task, listId }); return { id: 'task_' + googleCalls.tasks.length }; } }
+};
+
+const People = {
+  People: {
+    createContact: (body) => { googleCalls.contacts.push(body); return { resourceName: 'people/c' + googleCalls.contacts.length }; },
+    updateContact: () => ({ resourceName: 'people/updated' })
+  }
+};
+
+const DocumentApp = {
+  ParagraphHeading: { HEADING1: 'HEADING1', HEADING2: 'HEADING2', NORMAL: 'NORMAL' },
+  create: (name) => {
+    const id = 'doc_' + (googleCalls.docs.length + 1);
+    const paragraphs = [];
+    const body = {
+      appendParagraph(text) {
+        paragraphs.push(text);
+        return { setHeading() { return this; }, appendHorizontalRule() { return { appendParagraph() { return {}; } }; } };
+      }
+    };
+    googleCalls.docs.push({ id, name, paragraphs });
+    fileStore.set(id, { id, getName: () => name, getUrl: () => 'https://docs.google.com/document/d/' + id });
+    return {
+      getId: () => id,
+      getUrl: () => 'https://docs.google.com/document/d/' + id,
+      getBody: () => body,
+      saveAndClose() {}
+    };
+  }
+};
+
+const Session = {
+  getEffectiveUser: () => ({ getEmail: () => 'hrms-deployer@example.com' })
+};
+
+/* ------------------------------------------------------------- HtmlService */
+// Emulates just enough of HtmlService for the UI host: templates resolve
+// frontend/<name>.html, and the returned object exposes the rendered markup.
+function readFrontendFile(name) {
+  const file = path.join(ROOT, 'frontend', name + '.html');
+  if (!fs.existsSync(file)) throw new Error('HtmlService: file not found: frontend/' + name + '.html');
+  return fs.readFileSync(file, 'utf8');
+}
+
+const HtmlService = {
+  XFrameOptionsMode: { ALLOWALL: 'ALLOWALL', SAMEORIGIN: 'SAMEORIGIN', DEFAULT: 'DEFAULT' },
+  createHtmlOutputFromFile(name) {
+    return {
+      getContent() { return readFrontendFile(name); },
+      setTitle() { return this; },
+      setXFrameOptionsMode() { return this; },
+      addMetaTag() { return this; }
+    };
+  },
+  createTemplateFromFile(name) {
+    const content = readFrontendFile(name);
+    return {
+      evaluate() {
+        const node = { getContent: () => content, setTitle() { return node; }, setXFrameOptionsMode() { return node; }, addMetaTag() { return node; } };
+        return node;
+      }
+    };
+  }
+};
+
 /* --------------------------------------------------------------- Load backend */
 const context = {
   console,
@@ -365,6 +473,14 @@ const context = {
   LockService,
   ScriptApp,
   ContentService,
+  HtmlService,
+  MailApp,
+  CalendarApp,
+  UrlFetchApp,
+  Tasks,
+  People,
+  DocumentApp,
+  Session,
   Date,
   Math,
   JSON,
@@ -384,7 +500,7 @@ const files = fs.readdirSync(BACKEND).filter((name) => name.endsWith('.gs')).sor
 const order = ['Utils.gs', 'Database.gs', 'Permissions.gs', 'Repo.gs', 'Settings.gs', 'Audit.gs', 'Auth.gs',
   'Notifications.gs', 'Workflow.gs', 'Access.gs', 'Organization.gs', 'Employees.gs', 'Attendance.gs', 'Leave.gs',
   'Payroll.gs', 'Money.gs', 'Documents.gs', 'Recruitment.gs', 'Performance.gs', 'Exit.gs', 'Assets.gs',
-  'Announcements.gs', 'Reports.gs', 'Backup.gs', 'Maintenance.gs', 'Actions.gs', 'Setup.gs', 'Code.gs'];
+  'Announcements.gs', 'Reports.gs', 'Backup.gs', 'Maintenance.gs', 'Google.gs', 'Actions.gs', 'Setup.gs', 'Code.gs', 'Ui.gs'];
 const missing = files.filter((name) => !order.includes(name));
 if (missing.length) throw new Error('Backend files missing from the load order: ' + missing.join(', '));
 order.forEach((name) => {
@@ -849,6 +965,99 @@ function loginTokenFor(employeeId) {
   }
   return loginTokens[employeeId];
 }
+
+/* ------------------------------------------- Google-only UI host (HtmlService) */
+console.log('\n16. Apps Script UI transport');
+const uiEnvelope = JSON.parse(vm.runInContext('api', context)(JSON.stringify({
+  action: 'public.config', token: null, payload: {}, reqId: 'ui-check-12345678'
+})));
+check('google.script.run api() answers public.config', uiEnvelope.ok === true && Boolean(uiEnvelope.data.companyName));
+check('ui api() echoes the request id', uiEnvelope.reqId === 'ui-check-12345678');
+const uiFailure = JSON.parse(vm.runInContext('api', context)(JSON.stringify({
+  action: 'auth.session', token: null, payload: {}, reqId: 'ui-check-87654321'
+})));
+check('ui api() returns error envelopes instead of throwing', uiFailure.ok === false && uiFailure.error.code === 'AUTH_REQUIRED');
+const uiGarbage = JSON.parse(vm.runInContext('api', context)(''));
+check('ui api() rejects an empty body', uiGarbage.ok === false && uiGarbage.error.code === 'VALIDATION');
+const uiHtml = vm.runInContext('doGet', context)({ parameter: {} });
+check('doGet renders the HtmlService shell', Boolean(uiHtml && typeof uiHtml.getContent === 'function'));
+check('rendered UI contains the bundled application', String(uiHtml.getContent()).indexOf('__focuson') > 0);
+
+/* ------------------------------------------- Google Workspace integrations */
+console.log('\n17. Google Workspace integrations');
+call('settings.update', { values: { MAIL_NOTIFICATIONS_ENABLED: true, CALENDAR_SYNC_ENABLED: true, GOOGLE_CHAT_ENABLED: true, GOOGLE_CHAT_WEBHOOK_URL: 'https://chat.googleapis.com/v1/spaces/TEST/messages?key=1&token=2', TASKS_SYNC_ENABLED: true, CONTACTS_SYNC_ENABLED: true } }, token);
+const integrationStatus = call('google.status', {}, token);
+check('integration status reports every channel', Boolean(integrationStatus.mail && integrationStatus.calendar && integrationStatus.chat && integrationStatus.contacts && integrationStatus.tasks && integrationStatus.docs));
+check('deployment account is reported', integrationStatus.account === 'hrms-deployer@example.com');
+check('mail quota is reported', typeof integrationStatus.mail.quota === 'number' && integrationStatus.mail.quota > 0);
+
+const beforeMail = googleCalls.mail.length;
+call('google.testMail', { to: 'ops@example.com' }, token);
+check('test mail is delivered through MailApp', googleCalls.mail.length === beforeMail + 1 && googleCalls.mail[googleCalls.mail.length - 1].to === 'ops@example.com');
+check('mail carries the company name as sender', googleCalls.mail[googleCalls.mail.length - 1].name === 'Focus Interiors Pvt Ltd');
+call('google.testChat', {}, token);
+check('chat webhook is called', googleCalls.chat.length >= 1 && googleCalls.chat[0].url.indexOf('chat.googleapis.com') > 0);
+
+const contactsResult = call('google.syncContacts', {}, token);
+check('contacts sync runs for active employees', contactsResult.total >= 2 && contactsResult.synced >= 0);
+check('contact payload has the work email', googleCalls.contacts.length === 0 || Boolean(googleCalls.contacts[0].emailAddresses[0].value));
+
+const holiday = call('org.save', { entity: 'holidays', name: 'Diwali Celebration', holidayDate: '2026-09-14', holidayType: 'PUBLIC', description: 'Festival of lights' }, token);
+check('holiday saved with an id', Boolean(holiday.id), JSON.stringify(holiday));
+const eventResult = call('google.createCalendarEvent', { holidayId: holiday.id }, token);
+check('holiday becomes a calendar event', Boolean(eventResult.eventId) && Boolean(calendarEvents[eventResult.eventId]));
+check('calendar event uses the holiday title', calendarEvents[eventResult.eventId].title === 'Diwali Celebration');
+
+/* Approval assignment delivers mail, chat and a task. */
+// Approvers must have a work e-mail for Gmail delivery; give the admin one.
+const adminRecord = call('employees.detail', { employeeId: 'FOCUS001' }, token).employee;
+call('employees.update', { id: adminRecord.id, employeeId: 'FOCUS001', workEmail: 'hr@focusinteriors.test' }, token);
+const mailBeforeApproval = googleCalls.mail.length;
+const chatBeforeApproval = googleCalls.chat.length;
+const tasksBeforeApproval = googleCalls.tasks.length;
+// Use a fresh employee: earlier sections offboard EMP0002, so it can no longer sign in.
+const integrationHire = call('employees.create', {
+  employeeId: 'EMP0150', displayName: 'Ishita Verma', workEmail: 'ishita@focusinteriors.test',
+  departmentId: department2.id, designationId: designation.id, branchId: branch.id,
+  joiningDate: '2026-03-01', employmentType: 'FULL_TIME', workLocationType: 'OFFICE',
+  reportingManagerId: 'FOCUS001', createAccount: true, roleIds: ['role_employee']
+}, token);
+check('integration test employee created', integrationHire.employeeId === 'EMP0150');
+const integrationTemp = vm.runInContext('Access.resetPassword({ actor: { employeeId: "FOCUS001", isSuperAdmin: true, permissions: [] } }, { employeeId: "EMP0150" })', context);
+const integrationLogin = call('auth.login', { employeeId: 'EMP0150', password: integrationTemp.temporaryPassword });
+call('auth.changePassword', { currentPassword: integrationTemp.temporaryPassword, newPassword: 'Employee#2026Pass' }, integrationLogin.token);
+const integrationEmployeeToken = integrationLogin.token;
+const integrationLeaveType = call('leave.myLeave', {}, integrationEmployeeToken).leaveTypes.find((type) => type.code === 'CL');
+call('leave.apply', { leaveTypeId: integrationLeaveType.id, startDate: '2026-12-14', endDate: '2026-12-15', reason: 'Family function out of town' }, integrationEmployeeToken);
+check('approval assignment sends e-mail', googleCalls.mail.length > mailBeforeApproval);
+check('approval assignment posts a chat card', googleCalls.chat.length > chatBeforeApproval);
+check('approval assignment creates a task', googleCalls.tasks.length > tasksBeforeApproval);
+
+/* Leave decision syncs the calendar and mails the employee. */
+const decisionMail = googleCalls.mail.length;
+const eventsBefore = Object.keys(calendarEvents).length;
+const integrationInbox = call('workflow.inbox', { filter: 'pending' }, token);
+const integrationLeave = integrationInbox.items.filter((item) => item.requestType === 'leave').pop();
+check('integration leave reached the approval inbox', Boolean(integrationLeave));
+approveFully(integrationLeave.approvalId, token, 'Approved by HR');
+check('leave decision e-mails the employee', googleCalls.mail.length > decisionMail);
+check('approved leave lands on the calendar', Object.keys(calendarEvents).length > eventsBefore);
+
+/* Google Chat approval card is well formed. */
+const card = vm.runInContext('Google.chatApprovalCard', context)('Test', [{ label: 'Leave', value: 'two days' }], '/workflow');
+check('approval card has a section and a widget', Array.isArray(card) && Boolean(card[0].sections[0].widgets.length));
+
+/* Docs rendering for issued letters. */
+const letter = vm.runInContext('Google.renderDocument', context)('Experience letter', 'Line one\nLine two', 'Test Employee');
+check('letter renders into a Google Doc', letter.ok === true && Boolean(letter.result.docId), JSON.stringify(letter));
+check('doc body receives the paragraphs', googleCalls.docs[googleCalls.docs.length - 1].paragraphs.indexOf('Line one') >= 0);
+
+/* Integration switches are honoured. */
+call('settings.update', { values: { MAIL_NOTIFICATIONS_ENABLED: false } }, token);
+const disabledStatus = call('google.status', {}, token);
+check('mail can be switched off', disabledStatus.mail.enabled === false);
+const ignoredMail = vm.runInContext('Google.sendMail', context)('ops@example.com', 'x', 'y');
+check('disabled mail does not send', ignoredMail.ok === false && ignoredMail.skipped === true);
 
 /* ------------------------------------------------------------------- Summary */
 console.log('\n─────────────────────────────────────────────');

@@ -237,6 +237,21 @@ Sensitive values (salary, PAN, Aadhaar, bank details, medical) are removed from 
 | `settings.update` | write | `settings.edit` |
 | `settings.updateFeatures` | write | `settings.edit` |
 
+## Google Workspace integration
+
+Every action is registered behind the same permission chain as the rest of the app. Delivery channels are Settings-gated and fail soft: a disabled channel returns `{ok:false, skipped:true}` instead of an error, and a delivery failure is audited rather than thrown.
+
+| Action | Type | Permission |
+| --- | --- | --- |
+| `google.status` | read | `settings.view` |
+| `google.testMail` | write | `settings.edit` |
+| `google.testChat` | write | `settings.edit` |
+| `google.syncContacts` | write | `employee.edit` |
+| `google.createCalendarEvent` | write | `settings.edit` |
+| `google.mailDigest` | write | `settings.edit` |
+
+`google.status` reports `account`, `mail {enabled, quota}`, `calendar`, `chat`, `contacts`, `tasks` and `docs` switches plus the resolved `calendarId` and settings keys. It never sends anything.
+
 ## System and maintenance
 
 | Action | Type | Permission |
@@ -295,3 +310,8 @@ Payload keys are validated server-side; unknown keys are ignored, missing requir
 | `backup.verify` | `{backupId}` |
 | `backup.restore` | `{backupId, confirmation:'RESTORE', reason (≥15)}` |
 | `system.selfTest` | `{}` → `{score, passed, total, checks[]}` |
+| `google.testMail` | `{to?}` → `{to, messageId, quota}`; defaults to the caller's work email |
+| `google.testChat` | `{text?}` → `{posted:true}`; needs `GOOGLE_CHAT_WEBHOOK_URL` |
+| `google.syncContacts` | `{}` → `{synced, failed, total, enabled}` (max 100 employees per call) |
+| `google.createCalendarEvent` | `{holidayId}` → `{eventId}`; all-day event on the holiday date |
+| `google.mailDigest` | `{}` → `{sent, approvers}`; one message per approver with their open count |

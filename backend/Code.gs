@@ -1,11 +1,5 @@
 /** JSON Web App entry point, rate limiting and declarative authorization dispatch. */
 
-function doGet(event) {
-  var parameters = (event && event.parameter) || {};
-  if (parameters.health) return jsonResponse({ ok: true, data: { status: 'ok', schema: HRMS_SCHEMA_VERSION }, reqId: null });
-  return jsonResponse({ ok: true, data: { status: 'ok' }, reqId: null });
-}
-
 function doPost(event) {
   var reqId = null;
   try {
