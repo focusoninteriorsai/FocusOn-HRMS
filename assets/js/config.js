@@ -13,7 +13,7 @@ export function getApiUrl() {
   if (!CONFIG.API_URL) return '';
   let url;
   try {
-    url = new URL(CONFIG.API_URL);
+    url = new URL(https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnS9qxnauSA_YmBrNZZN69__iGM0DjAm9EXNFwdDCuFWb9UlUC6tFsA-GwTmhuQunePS2sT53CQP5sltqmAXo1gAIphyFPO6XLeXgl1R41kBiUFQoxqGJjPE4E--rF5ztnjwjraaOObJLYNGlKNKKGnaoxrFHkFV0hze2ZNj1HhyCNWDyK8G_b_49dgbEiGi4gVrG3-TSjE7zbCpBYnme6Cmxhq1v6HOINXgGaazFuovo_K9-yaj_I5s_V_jzKRMwNIv-X9ij5fRWfAQie0R5AXecCOV2g&lib=MMXYObIOyjoCeuPlJtZSklsIDDx8yuSIQ);
   } catch (error) {
     throw new Error('invalidApiUrl');
   }
