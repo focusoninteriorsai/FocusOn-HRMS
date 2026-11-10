@@ -3,7 +3,15 @@
  * scoped feature switches and the audit trail. All of it is Super-Admin editable.
  */
 var Access = (function () {
-  var SCOPES = Permissions.VALID_SCOPES;
+  // Apps Script evaluates files alphabetically, so Access.gs runs before
+  // Permissions.gs. Reading Permissions.VALID_SCOPES here would throw
+  // "Cannot read properties of undefined (reading 'VALID_SCOPES')".
+  // Resolve the list lazily, on first use, and cache it.
+  var cachedScopes = null;
+  function scopeList() {
+    if (!cachedScopes) cachedScopes = Permissions.VALID_SCOPES;
+    return cachedScopes;
+  }
 
   function temporaryPassword() {
     var upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -217,14 +225,14 @@ var Access = (function () {
         permissions: permissions
       };
     }).sort(function (left, right) { return left.name.localeCompare(right.name); });
-    return { roles: items, catalog: catalog, scopes: SCOPES };
+    return { roles: items, catalog: catalog, scopes: scopeList() };
   }
 
   function saveRole(authentication, payload) {
     var actor = authentication.actor;
     var roleId = Utils.cleanString(payload.roleId);
     var name = Utils.requireString(payload, 'name', { max: 160 });
-    var scopeType = Utils.requireEnum(payload.scopeType, SCOPES, 'Scope');
+    var scopeType = Utils.requireEnum(payload.scopeType, scopeList(), 'Scope');
     var description = Utils.cleanString(payload.description).slice(0, 1000);
     var role;
     if (roleId) {
@@ -417,7 +425,7 @@ var Access = (function () {
     if (employeeId === actor.employeeId && effect === 'DENY') Utils.fail('FORBIDDEN', 'You cannot deny a permission to yourself.');
     if (isSuperAdmin(employeeId) && !actor.isSuperAdmin) Utils.fail('FORBIDDEN', 'Only a Super Admin can change a Super Admin access.');
     var scopeType = Utils.cleanString(payload.scopeType);
-    if (scopeType && SCOPES.indexOf(scopeType) < 0) Utils.fail('VALIDATION', 'Unknown scope.');
+    if (scopeType && scopeList().indexOf(scopeType) < 0) Utils.fail('VALIDATION', 'Unknown scope.');
     var expiresAt = Utils.cleanString(payload.expiresAt);
     if (expiresAt) {
       var parsed = new Date(expiresAt);
@@ -470,7 +478,7 @@ var Access = (function () {
     if (end.getTime() <= start.getTime()) Utils.fail('VALIDATION', 'The end of the delegation must follow the start.');
     if (end.getTime() - start.getTime() > 180 * 86400000) Utils.fail('VALIDATION', 'A delegation cannot exceed 180 days.');
     var scopeType = Utils.cleanString(payload.scopeType) || 'Self';
-    if (SCOPES.indexOf(scopeType) < 0) Utils.fail('VALIDATION', 'Unknown scope.');
+    if (scopeList().indexOf(scopeType) < 0) Utils.fail('VALIDATION', 'Unknown scope.');
     var record = Database.insert('Delegations', {
       delegator_employee_id: delegator, delegate_employee_id: delegate,
       permissions_json: JSON.stringify(permissions), scope_type: Permissions.scopeCeiling(scopeType, 'Self') === scopeType ? scopeType : scopeType,
