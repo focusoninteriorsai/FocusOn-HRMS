@@ -2,7 +2,8 @@
 
 import { apiRequest } from '../api.js';
 import { getState } from '../store.js';
-import { ICONS, showToast, openModal, closeModal } from '../ui.js';
+import { ICONS, showToast, openModal, closeModal, confirmDialog } from '../ui.js';
+import { createCalendarEvent, getWorkspaceUser, signInWithGoogle } from '../workspace.js';
 
 export async function renderLeavePage(container) {
   const state = getState();
@@ -16,9 +17,14 @@ export async function renderLeavePage(container) {
           <h2>Leave Management</h2>
           <p style="font-size: 0.875rem; color: var(--text-muted);">View quota balances, track applications, and submit requests.</p>
         </div>
-        <button id="btn-apply-leave" class="btn btn-primary">
-          ${ICONS.calendar} Apply for Leave
-        </button>
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+          <button id="btn-sync-cal-leave" class="btn btn-secondary">
+            ${ICONS.calendar} Schedule in Calendar
+          </button>
+          <button id="btn-apply-leave" class="btn btn-primary">
+            ${ICONS.calendar} Apply for Leave
+          </button>
+        </div>
       </div>
 
       <!-- Quota Cards Grid -->
@@ -84,6 +90,12 @@ export async function renderLeavePage(container) {
           <textarea id="leave-reason" class="form-input" rows="3" placeholder="Specify reason for leave..." required></textarea>
         </div>
 
+        <div class="form-group" style="background-color: var(--bg-surface-muted); padding: 0.75rem; border-radius: var(--radius-sm);">
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; cursor: pointer;">
+            <input type="checkbox" id="leave-sync-calendar" checked /> Add leave duration to my Google Calendar
+          </label>
+        </div>
+
         <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1rem;">
           <button type="button" class="btn btn-secondary" id="btn-leave-cancel">Cancel</button>
           <button type="submit" class="btn btn-primary" id="btn-submit-leave">Submit Application</button>
@@ -106,17 +118,71 @@ export async function renderLeavePage(container) {
         is_half_day: document.getElementById('leave-half-day').checked,
         reason: document.getElementById('leave-reason').value
       };
+      const syncCal = document.getElementById('leave-sync-calendar')?.checked;
 
       try {
         await apiRequest('leave.apply', payload);
         closeModal();
         showToast('Leave application submitted for approval.', 'success');
+
+        if (syncCal && getWorkspaceUser()) {
+          try {
+            await createCalendarEvent({
+              summary: `Leave: ${user.name || user.employeeId} (${payload.leave_type_code})`,
+              description: `Leave Reason: ${payload.reason} | Submitted via FOCUSON HRMS`,
+              start: { date: payload.start_date },
+              end: { date: payload.end_date }
+            });
+            showToast('Leave event added to Google Calendar.', 'success');
+          } catch (calErr) {
+            console.warn('Google Calendar sync notice:', calErr);
+          }
+        }
+
         loadBalances();
       } catch (err) {
         showToast(err.message || 'Application failed', 'error');
       }
     };
   };
+
+  // Schedule Custom Calendar Event Button
+  const syncBtn = document.getElementById('btn-sync-cal-leave');
+  if (syncBtn) {
+    syncBtn.onclick = async () => {
+      if (!getWorkspaceUser()) {
+        const connectConfirm = await confirmDialog(
+          'Google Workspace Sign-In',
+          'Scheduling in Google Calendar requires connecting your Google account. Connect now?',
+          'Connect Workspace'
+        );
+        if (connectConfirm) {
+          try {
+            await signInWithGoogle();
+            showToast('Google Workspace connected!', 'success');
+          } catch (e) {
+            showToast(e.message || 'Sign in failed', 'error');
+            return;
+          }
+        } else {
+          return;
+        }
+      }
+
+      const todayStr = new Date().toISOString().substring(0, 10);
+      try {
+        await createCalendarEvent({
+          summary: `HR Schedule: ${user.name || user.employeeId} Away`,
+          description: `Scheduled via FOCUSON HRMS`,
+          start: { date: todayStr },
+          end: { date: todayStr }
+        });
+        showToast('Event scheduled on Google Calendar!', 'success');
+      } catch (err) {
+        showToast(err.message || 'Calendar event creation failed', 'error');
+      }
+    };
+  }
 
   async function loadBalances() {
     const grid = document.getElementById('leave-balances-grid');

@@ -6,6 +6,7 @@ import { t } from '../i18n.js';
 import { ICONS, showToast, openModal, closeModal } from '../ui.js';
 import { getBrowserLocation } from '../geo.js';
 import { openCameraCaptureModal } from '../camera.js';
+import { renderGeofenceMap } from '../maps.js';
 
 export async function renderAttendancePage(container) {
   const state = getState();
@@ -44,6 +45,19 @@ export async function renderAttendancePage(container) {
         </div>
       </div>
 
+      <!-- Google Maps Interactive Geofence Map -->
+      <div class="astra-card" style="padding: 1.25rem;">
+        <div class="astra-card-header" style="margin-bottom: 0.75rem;">
+          <h3 class="astra-card-title">${ICONS.building} Live Geofence Radar</h3>
+          <span class="meta-cluster">
+            <span>Radius: 150m</span>
+            <span class="meta-dot">·</span>
+            <span>Office HQ</span>
+          </span>
+        </div>
+        <div id="attendance-map-canvas" style="width: 100%; height: 280px; border-radius: var(--radius-md); background-color: var(--bg-surface-muted); overflow: hidden;"></div>
+      </div>
+
       <!-- Monthly Log History -->
       <div class="astra-card">
         <div class="astra-card-header">
@@ -72,6 +86,14 @@ export async function renderAttendancePage(container) {
   updateClock();
   const clockInterval = setInterval(updateClock, 1000);
 
+  // Initialize Google Maps Canvas
+  const mapCanvas = document.getElementById('attendance-map-canvas');
+  if (mapCanvas) {
+    renderGeofenceMap(mapCanvas, null, null).catch(err => {
+      console.warn('Map initialization:', err);
+    });
+  }
+
   // Check-In Handler
   document.getElementById('btn-punch-in').onclick = async () => {
     const geoText = document.getElementById('geo-status-text');
@@ -81,6 +103,10 @@ export async function renderAttendancePage(container) {
     try {
       location = await getBrowserLocation();
       geoText.textContent = `GPS acquired (accuracy: ${Math.round(location.accuracy)}m)`;
+      // Update interactive map with user's live position
+      if (mapCanvas) {
+        renderGeofenceMap(mapCanvas, location.latitude, location.longitude).catch(() => {});
+      }
     } catch (locErr) {
       showToast(locErr.message, 'warning');
       geoText.textContent = 'GPS failed: ' + locErr.message;

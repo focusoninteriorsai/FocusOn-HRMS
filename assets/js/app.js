@@ -17,11 +17,20 @@ import { renderPayrollPage } from './pages/payroll.js';
 import { renderSuperAdminPage } from './pages/superadmin.js';
 import { renderReportsPage } from './pages/reports.js';
 import { renderRdashPage } from './pages/rdash.js';
+import { renderDocumentsPage } from './pages/documents.js';
+import { renderTasksPage } from './pages/tasks.js';
+import { initMapsQuotaDefense } from './maps.js';
+import { initWorkspaceAuth, signInWithGoogle, getWorkspaceUser, disconnectWorkspace } from './workspace.js';
 
 // DOM Mount Elements
 const root = document.getElementById('root');
 
 async function bootstrap() {
+  initMapsQuotaDefense();
+  await initWorkspaceAuth(() => {
+    // Re-render shell if workspace connection state updates
+    renderShell();
+  });
   await initI18n();
   initTheme();
 
@@ -366,6 +375,10 @@ function renderAuthenticatedShell() {
             <span class="nav-item-icon">${ICONS.fileText}</span>
             <span>${t('nav.documents')}</span>
           </a>
+          <a href="#/tasks" class="nav-item" data-route="#/tasks">
+            <span class="nav-item-icon">${ICONS.checkCircle}</span>
+            <span>Tasks & Drive</span>
+          </a>
           <a href="#/inbox" class="nav-item" data-route="#/inbox">
             <span class="nav-item-icon">${ICONS.inbox}</span>
             <span>${t('nav.inbox')}</span>
@@ -413,7 +426,12 @@ function renderAuthenticatedShell() {
             <h2 class="page-title" id="page-heading">${t('nav.dashboard')}</h2>
           </div>
 
-          <div class="topbar-right">
+            <!-- Google Workspace Connection Indicator -->
+            <button id="btn-workspace-auth" class="btn btn-ghost" style="font-size: 0.8125rem;" title="Connect Google Workspace (Sheets, Docs, Calendar, Drive)">
+              <span class="status-dot ${getWorkspaceUser() ? 'status-dot-success' : 'status-dot-warning'}"></span>
+              <span>${getWorkspaceUser() ? 'Workspace Connected' : 'Connect Workspace'}</span>
+            </button>
+
             <!-- Simple Mode Toggle for field/storekeeper users -->
             <button id="btn-toggle-simple" class="btn btn-ghost" style="font-size: 0.8125rem;">
               <span class="status-dot ${isSimple ? 'status-dot-success' : 'status-dot-info'}"></span>
@@ -489,6 +507,31 @@ function renderAuthenticatedShell() {
 
   // User Menu Profile modal
   document.getElementById('btn-user-menu').onclick = () => openUserMenuModal();
+
+  // Workspace Auth Trigger
+  const wsBtn = document.getElementById('btn-workspace-auth');
+  if (wsBtn) {
+    wsBtn.onclick = async () => {
+      const currentWsUser = getWorkspaceUser();
+      if (currentWsUser) {
+        const confirmed = await confirmDialog('Google Workspace', `Connected as ${currentWsUser.email}. Disconnect?`);
+        if (confirmed) {
+          await disconnectWorkspace();
+          showToast('Disconnected from Google Workspace.', 'info');
+          renderShell();
+        }
+      } else {
+        try {
+          showToast('Connecting to Google Workspace...', 'info');
+          const res = await signInWithGoogle();
+          showToast(`Connected to Google Workspace as ${res.user.email}!`, 'success');
+          renderShell();
+        } catch (err) {
+          showToast(err.message || 'Google Sign-In failed', 'error');
+        }
+      }
+    };
+  }
 
   // Mobile drawer trigger
   const moreBtn = document.getElementById('btn-mobile-more');
@@ -915,6 +958,18 @@ function setupRoutes() {
     title: t('nav.payslips'),
     requiresAuth: true,
     render: renderPayrollPage
+  });
+
+  registerRoute('#/documents', {
+    title: t('nav.documents'),
+    requiresAuth: true,
+    render: renderDocumentsPage
+  });
+
+  registerRoute('#/tasks', {
+    title: 'Tasks & Drive',
+    requiresAuth: true,
+    render: renderTasksPage
   });
 
   registerRoute('#/superadmin', {

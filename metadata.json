@@ -1,6 +1,10 @@
 {
   "name": "FOCUSON HRMS",
   "description": "Production-ready enterprise HR and Payroll web application with Google Apps Script API, Google Sheets database, role-based access control, and geofenced attendance.",
-  "requestFramePermissions": ["geolocation"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

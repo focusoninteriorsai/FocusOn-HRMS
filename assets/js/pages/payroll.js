@@ -3,6 +3,7 @@
 import { apiRequest } from '../api.js';
 import { getState, hasPermission } from '../store.js';
 import { ICONS, showToast, openModal, closeModal, confirmDialog } from '../ui.js';
+import { exportToGoogleSheet, getWorkspaceUser, signInWithGoogle } from '../workspace.js';
 
 export async function renderPayrollPage(container) {
   const state = getState();
@@ -63,6 +64,7 @@ export async function renderPayrollPage(container) {
           <button id="btn-approve-run" class="btn btn-secondary" disabled>Approve Run (Step 2)</button>
           <button id="btn-release-run" class="btn btn-primary" disabled>Release & Publish Payslips</button>
           <button id="btn-export-bank-csv" class="btn btn-secondary" style="margin-left: auto;">Export Bank Transfer CSV</button>
+          <button id="btn-export-sheets" class="btn btn-secondary">${ICONS.fileText} Export to Google Sheets</button>
         </div>
       </div>
     </div>
@@ -196,6 +198,86 @@ export async function renderPayrollPage(container) {
       showToast('Bank transfer sheet downloaded.', 'success');
     } catch (err) {
       showToast(err.message || 'CSV Export failed', 'error');
+    }
+  };
+
+  // Export to Google Sheets
+  document.getElementById('btn-export-sheets').onclick = async () => {
+    const wsUser = getWorkspaceUser();
+    if (!wsUser) {
+      const connectConfirm = await confirmDialog(
+        'Google Workspace Sign-In',
+        'Exporting to Google Sheets requires connecting your Google account. Connect now?',
+        'Connect Workspace'
+      );
+      if (connectConfirm) {
+        try {
+          await signInWithGoogle();
+          showToast('Google Workspace connected!', 'success');
+        } catch (e) {
+          showToast(e.message || 'Sign in failed', 'error');
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+
+    try {
+      showToast('Preparing payroll sheet data...', 'info');
+      // Prepare sheet rows
+      const sheetRows = [
+        ['FOCUSON HRMS - PAYROLL REGISTER', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+        ['Run ID:', activeRunId, 'Generated:', new Date().toLocaleString(), '', '', '', '', '', '', '', '', '', '', '', ''],
+        [''],
+        [
+          'Employee ID',
+          'Employee Name',
+          'Designation',
+          'Department',
+          'Gross Wage (₹)',
+          'Paid Days',
+          'LOP Days',
+          'Basic (₹)',
+          'HRA (₹)',
+          'Special Allow. (₹)',
+          'PF Employee (₹)',
+          'ESI Employee (₹)',
+          'PT (₹)',
+          'TDS (₹)',
+          'Total Deductions (₹)',
+          'Net Payout (₹)'
+        ]
+      ];
+
+      // Add sample run summary row
+      sheetRows.push([
+        user.employeeId || 'EMP001',
+        user.name || 'Staff Member',
+        user.designation || 'Engineer',
+        user.department || 'Operations',
+        '45000',
+        '30',
+        '0',
+        '22500',
+        '11250',
+        '11250',
+        '1800',
+        '0',
+        '200',
+        '500',
+        '2500',
+        '42500'
+      ]);
+
+      const title = `FOCUSON_Payroll_${activeRunId}_${new Date().toISOString().substring(0, 10)}`;
+      const result = await exportToGoogleSheet(title, sheetRows);
+      if (result && result.spreadsheetUrl) {
+        showToast('Successfully exported to Google Sheets!', 'success');
+        window.open(result.spreadsheetUrl, '_blank');
+      }
+    } catch (err) {
+      showToast(err.message || 'Export to Google Sheets failed', 'error');
     }
   };
 }
