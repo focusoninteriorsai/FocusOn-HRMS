@@ -1,6 +1,8 @@
 /**
- * In-app notification centre. Delivery is deliberately in-app only: no external
- * mail or SMS provider is assumed, so nothing leaves the company account.
+ * In-app notification centre. This module only writes notification rows; it
+ * never talks to the network. Optional Gmail, Google Chat, Calendar, Contacts,
+ * Tasks and Docs delivery lives in Google.gs and is triggered by the module that
+ * owns the event, so a disabled channel can never block an in-app notification.
  */
 var Notifications = (function () {
   var MAX_PER_EVENT = 200;

@@ -470,6 +470,65 @@ export async function renderSettings(container) {
     body.replaceChildren(host);
   }
 
+  /**
+   * Google Workspace card: proves each optional channel from inside the app.
+   * Everything here is a permission-checked backend action, so the buttons fail
+   * with the server's own message rather than guessing.
+   */
+  async function googleCard(data) {
+    if (!can('settings.view')) return null;
+    let status;
+    try {
+      status = await apiRequest('google.status', {}, { isRead: true });
+    } catch (error) {
+      status = null;
+    }
+    const host = element('article', { className: 'card pad-1-5 mb-1' }, [
+      element('div', { className: 'card-heading' }, [
+        element('h2', { text: t('settings.googleWorkspace') }),
+        element('span', { className: 'badge badge-info', text: status && status.account ? status.account : '—' })
+      ]),
+      element('p', { className: 'page-subtitle', text: t('settings.googleHint') })
+    ]);
+    if (!status) {
+      host.append(element('p', { className: 'muted-small', text: t('errors.pageTitle') }));
+      return host;
+    }
+    const channels = [
+      ['googleMail', status.mail && status.mail.enabled],
+      ['googleCalendar', status.calendar && status.calendar.enabled],
+      ['googleChat', status.chat && status.chat.enabled],
+      ['googleContacts', status.contacts && status.contacts.enabled],
+      ['googleTasks', status.tasks && status.tasks.enabled],
+      ['googleDocs', status.docs && status.docs.enabled]
+    ];
+    host.append(dataTable([
+      { labelKey: 'settings.key', render: (row) => t(row.labelKey) },
+      { labelKey: 'settings.value', render: (row) => stateBadge(row.enabled ? 'APPROVED' : 'INACTIVE') }
+    ], channels.map(([labelKey, enabled]) => ({ labelKey, enabled }))));
+    if (status.mail && typeof status.mail.quota === 'number') {
+      host.append(element('p', { className: 'muted-small', text: t('settings.googleQuota', { remaining: status.mail.quota }) }));
+    }
+    if (status.calendarId) {
+      host.append(element('p', { className: 'muted-small', text: `${t('settings.googleCalendarId')}: ${status.calendarId}` }));
+    }
+    if (can('settings.edit')) {
+      const actions = [
+        ['settings.googleSendTestMail', 'mail', () => apiRequest('google.testMail', {}).then((result) => showToast(t('settings.googleTestMailSent', { to: result.to }), 'success'))],
+        ['settings.googlePostTestCard', 'bell', () => apiRequest('google.testChat', {}).then(() => showToast(t('settings.googleCardPosted'), 'success'))],
+        ['settings.googleMailDigest', 'megaphone', () => apiRequest('google.mailDigest', {}).then((result) => showToast(t('settings.googleDigestSent', { sent: result.sent }), 'success'))]
+      ];
+      if (can('employee.edit')) {
+        actions.push(['settings.googleSyncContacts', 'users', () => apiRequest('google.syncContacts', {}).then((result) => showToast(t('settings.googleContactsSynced', { synced: result.synced, total: result.total }), 'success'))]);
+      }
+      host.append(element('div', { className: 'page-actions' }, actions.map(([labelKey, iconName, run]) => button(labelKey, {
+        iconName,
+        onClick: () => run().catch((error) => showToast(translateError(error), 'error'))
+      }))));
+    }
+    return host;
+  }
+
   function settingField(setting) {
     const id = `setting-${setting.key}`;
     let control;
@@ -610,6 +669,7 @@ export async function renderSettings(container) {
           }
         ], backup.items || [], { emptyKey: 'settings.noBackups' })
       ]),
+      await googleCard(data),
       element('article', { className: 'card pad-1-5', }, [
         element('h2', { text: t('settings.environment') }),
         dataTable([

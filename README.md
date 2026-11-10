@@ -1,6 +1,6 @@
 # FOCUSON HRMS
 
-FOCUSON HRMS is a no-build HR and payroll web application for a company of approximately 80 employees, designed to scale to 300. The frontend is a static, mobile-first ES-module application for GitHub Pages. The backend is a Google Apps Script JSON Web App using Google Sheets for data and private Google Drive folders for files.
+FOCUSON HRMS is a no-build HR and payroll web application for a company of approximately 80 employees, designed to scale to 300. Everything runs inside one Google account: a single Google Apps Script Web App serves both the mobile-first screens (HtmlService) and the API, Google Sheets is the database, and private Google Drive folders hold files. One deployment, one `/exec` URL, no GitHub Pages, no static host, no build step for the user.
 
 This branch contains the **complete application**: the Phase 1 security foundation, the full module backend, and the desktop-grade module screens for every function listed in `docs/API.md`. Menus stay hidden unless the signed-in user holds the module permission *and* the module feature switch is on.
 
@@ -33,21 +33,23 @@ Every screen is server-authorised: navigation is a convenience only, and each ac
 ## Architecture
 
 ```text
-GitHub Pages (static HTML/CSS/ES modules)
-  index.html → app.js → router/pages → api.js
-                                      |
-                           POST text/plain JSON
-                                      |
-Google Apps Script Web App (/exec)
-  Code.gs dispatcher
-    → Auth.gs session validation
-    → Permissions.gs authorization chain
-    → Phase 1 handler
-    → Database.gs / Audit.gs
-                                      |
-                    HRMS_CORE_DB + HRMS_ATTENDANCE_YEAR
-                    Private Drive folder hierarchy
+Browser → /exec (one URL, one Google account)
+  Ui.gs doGet()        → HtmlService template "Index"
+                         (frontend/Index.html: every module, dictionary,
+                          icon and manifest inlined by tools/build-apps-script-ui.js)
+  google.script.run.api(requestJson)
+    → Ui.gs api()      → Code.gs doPost() dispatcher
+      → Auth.gs session validation
+      → Permissions.gs authorization chain
+      → Actions.gs registry → module handler
+      → Database.gs / Audit.gs
+                         |
+      Sheets: HRMS_CORE_DB + HRMS_ATTENDANCE_<YEAR>
+      Drive:  private folder hierarchy
+      Gmail / Calendar / Docs / Chat / Contacts / Tasks (Settings-gated)
 ```
+
+The screens and the API ship together, so there is no API URL to configure and no CORS. `assets/js/api.js` uses `google.script.run` when it is available and only falls back to `fetch` for local static inspection.
 
 The browser never receives a trusted role decision from storage or navigation state. Menu visibility is only a convenience. Every protected action authenticates and authorizes again on the server.
 
@@ -59,26 +61,40 @@ assets/
   css/       Astra tokens, base, components, animations, pages, app modules
   i18n/      en.json, hi.json
   icons/     Neutral product icons
-  js/        API, auth, router, store, i18n, theme, UI, geo/camera helpers
+  js/        API (google.script.run transport), auth, router, store, i18n, theme, UI, geo/camera helpers
   js/pages/  _kit.js shared page kit + one module per screen
 backend/
-  appsscript.json
+  appsscript.json     (Sheets/Drive/Gmail/Calendar/Docs/Contacts/Tasks/Chat scopes)
+  Ui.gs               HtmlService host: doGet, api(), include()
+  Google.gs           Gmail, Calendar, Chat, Contacts, Tasks, Docs integration
   Code.gs, Actions.gs dispatcher and registry
   Auth, Audit, Permissions, Database, Repo, Utils, Setup
   Employees, Organization, Attendance, Leave, Payroll, Money, Documents,
   Recruitment, Performance, Exit, Assets, Announcements, Reports, Workflow,
   Notifications, Access, Settings, Backup, Maintenance
+frontend/
+  Index.html          generated HtmlService bundle (paste into the "Index" HTML file)
 tools/
-  smoke-test.js  in-memory Apps Script emulator with the full check suite
+  build-apps-script-ui.js  inline bundler (write / --check)
+  bundle-smoke.js          jsdom boot test of the generated bundle
+  smoke-test.js            in-memory Apps Script emulator with the full check suite
 docs/
   DEPLOYMENT.md, SECURITY.md, API.md
 ```
 
 ## Quick start
 
-Follow **[docs/FOCUSON_HRMS_SETUP_GUIDE.docx](docs/FOCUSON_HRMS_SETUP_GUIDE.docx)** (Word, step-by-step with troubleshooting) or **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** in order. There is no `npm install`, bundler, framework compilation, or generated frontend. After the Apps Script deployment, place its `/exec` URL in `assets/js/config.js` and serve the repository root with GitHub Pages.
+Follow **[docs/FOCUSON_HRMS_SETUP_GUIDE.docx](docs/FOCUSON_HRMS_SETUP_GUIDE.docx)** (Word, step-by-step with troubleshooting) or **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** in order. You paste the `backend/*.gs` files and the generated `frontend/Index.html` into one Apps Script project, run `setupSystem()` once, and deploy that project as a Web App. The `/exec` URL of that deployment *is* the application — there is nothing else to host.
 
-For local static inspection only, any ordinary static HTTP server can serve the repository root. API login requires the deployed Apps Script backend and an HTTPS production URL.
+Maintainers change the screens by editing `assets/js/**` and running `node tools/build-apps-script-ui.js`; the regenerated `frontend/Index.html` is pasted into the `Index` HTML file. The full local gate is:
+
+```bash
+node tools/build-apps-script-ui.js --check && \
+node tools/bundle-smoke.js && \
+node tools/smoke-test.js && \
+node tools/ui-check.js && \
+node tools/contract-check.js
+```
 
 ## Assumptions and deliberate limits
 
@@ -90,8 +106,9 @@ For local static inspection only, any ordinary static HTTP server can serve the 
 6. **Cache limits:** CacheService can evict rate counters early. The deployment account’s executions and audit logs must be monitored; a larger external abuse-defense layer is outside this no-paid-service architecture.
 7. **No statutory filing or values:** PF, ESI, PT, TDS, bonus, gratuity, and wage-definition keys are empty. Payroll cannot silently use assumptions.
 8. **No GPS trust claim:** the later attendance phase will enforce geofences on the server, but browsers cannot detect mock-GPS software. This limitation and mitigations are documented in `docs/SECURITY.md`.
-9. **Offline privacy:** the service worker caches only an allowlist of static files. API calls, session data, employee data, Drive files, and non-GET requests are never cached.
+9. **No offline shell on the hosted path:** HtmlService cannot serve a service worker or external assets, so `google.script.run` deployments skip service-worker registration and load everything from the inlined bundle. The service-worker/manifest assets remain for local static inspection only.
 10. **Time zone:** the Apps Script manifest and displayed dates use Asia/Kolkata. Stored instants are ISO UTC strings; date-only fields remain ISO calendar dates.
+11. **Google delivery is optional and off by default:** Gmail, Calendar, Chat, Contacts and Tasks each have a Settings switch and fail soft. A disabled channel returns a skipped result and an audited event instead of blocking the workflow, and mail is sent as the deployment account, so its daily recipient quota applies. Google Docs export is on by default because it only writes into the HRMS Drive folder.
 
 ## Verification
 

@@ -312,9 +312,51 @@ var Leave = (function () {
     } else if (state === 'RETURNED' || state === 'CANCELLED') {
       Database.update('Leave_Applications', application.id, { status: state === 'CANCELLED' ? 'CANCELLED' : 'RETURNED', decided_at: Utils.nowIso() }, authentication.actor.employeeId);
     }
+    var summary = Repo.label('Leave_Types', application.leave_type_id) + ' · ' +
+      String(application.start_date).slice(0, 10) + ' to ' + String(application.end_date).slice(0, 10);
     if (Settings.bool('NOTIFY_LEAVE_DECIDED', true) && typeof Notifications !== 'undefined') {
-      Notifications.push(application.employee_id, 'LEAVE', 'Leave ' + state.toLowerCase(),
-        Repo.label('Leave_Types', application.leave_type_id) + ' · ' + String(application.start_date).slice(0, 10) + ' to ' + String(application.end_date).slice(0, 10), 'leave');
+      Notifications.push(application.employee_id, 'LEAVE', 'Leave ' + state.toLowerCase(), summary, 'leave');
+    }
+    syncLeaveToGoogle(application, state, summary);
+  }
+
+  /**
+   * Google delivery for a leave decision: Gmail to the employee and an all-day
+   * Google Calendar block while the leave is approved (removed when it is
+   * cancelled or returned). Best-effort and fully switchable.
+   */
+  function syncLeaveToGoogle(application, state, summary) {
+    try {
+      if (typeof Google === 'undefined') return;
+      var to = Google.employeeEmail(application.employee_id);
+      if (Google.mailEnabled() && to) {
+        Google.sendMail(to, 'Leave ' + String(state).toLowerCase(), [
+          Repo.employeeName(application.employee_id) + ',',
+          '',
+          summary,
+          '',
+          'Your leave request is now ' + String(state).toLowerCase() + '.',
+          Google.appLink('/leave') ? 'Open your leave page: ' + Google.appLink('/leave') : ''
+        ].filter(Boolean).join('\n'), { prefix: Settings.text('MAIL_SUBJECT_PREFIX', '[FOCUSON HRMS]') + ' ' });
+      }
+      if (!Google.calendarEnabled()) return;
+      var start = String(application.start_date).slice(0, 10);
+      var end = String(application.end_date).slice(0, 10);
+      if (state === 'APPROVED') {
+        var guests = [to].filter(Boolean);
+        var result = Google.createAllDayEvent(
+          'Leave: ' + Repo.employeeName(application.employee_id) + ' (' + Repo.label('Leave_Types', application.leave_type_id) + ')',
+          start, end, summary, guests);
+        if (result && result.ok && result.result) {
+          Database.update('Leave_Applications', application.id, { calendar_event_id: String(result.result) }, 'SYSTEM');
+        }
+      } else if (application.calendar_event_id) {
+        Google.deleteEvent(application.calendar_event_id);
+        Database.update('Leave_Applications', application.id, { calendar_event_id: '' }, 'SYSTEM');
+      }
+    } catch (error) {
+      Audit.logEvent('LEAVE_GOOGLE_SYNC_FAILED', application.employee_id, 'Leave_Applications', application.id, 'FAILED',
+        { message: String(error && error.message).slice(0, 300) }, {});
     }
   }
 

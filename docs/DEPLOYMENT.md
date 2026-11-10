@@ -1,13 +1,15 @@
-# FOCUSON HRMS deployment guide — Phase 1
+# FOCUSON HRMS deployment guide
 
 This procedure is written for a non-developer. Perform it using the company’s dedicated Google account, not an employee’s personal account.
+
+Everything — the screens and the API — is served by **one** Apps Script Web App at a single `/exec` URL. There is no GitHub Pages, no static host, no bundler to install, and no external web server. Sheets is the database and a private Drive folder tree holds files.
 
 ## 1. Prepare the company accounts
 
 1. Create a dedicated company Google account such as the account your IT team reserves for HR system ownership.
 2. Enable **2-Step Verification**, add a second verification method, and store recovery codes in the company’s secure credential vault.
 3. Restrict access to this account. Its owner can access the Sheets, Drive files, execution logs, and audit data.
-4. Create or open the company GitHub repository that will host the frontend. Do not place Script Properties, credentials, spreadsheet IDs, or exported employee data in Git.
+4. Optional: keep this repository in Git for your own version history. Git is **not** used for hosting; the app runs entirely inside this Google account.
 
 ## 2. Create the Apps Script project
 
@@ -16,7 +18,8 @@ This procedure is written for a non-developer. Perform it using the company’s 
 3. Open **Project Settings**, enable **Show “appsscript.json” manifest file in editor**, and confirm the time zone is **Asia/Kolkata** in the manifest.
 4. Add each `.gs` file from this repository’s `backend/` directory with exactly the same filename. Apps Script adds `.gs` automatically; do not create names such as `Code.gs.gs`.
 5. Replace the manifest with `backend/appsscript.json`.
-6. Save all files. The Phase 1 files are `Code.gs`, `Utils.gs`, `Database.gs`, `Audit.gs`, `Permissions.gs`, `Auth.gs`, and `Setup.gs`.
+6. Add every remaining `backend/*.gs` file (the same list the setup guide prints), plus one **HTML** file named exactly `Index` and paste the contents of `frontend/Index.html` into it. Apps Script flattens file names, so the HTML file is `Index`, not `frontend/Index.html`.
+7. Save all files. `appsscript.json` already declares the OAuth scopes for Sheets, Drive, Gmail, Calendar, Docs, Contacts, Tasks and Chat, and enables the People and Tasks advanced services.
 
 Optional developers can use `clasp`, but `.clasp.json` is intentionally ignored by Git. No local tooling is required.
 
@@ -36,7 +39,7 @@ Do not email or chat the one-time password. Do not write it in a source file. Th
 ## 4. Run the idempotent setup
 
 1. In the editor’s function selector, choose **`setupSystem`** and select **Run**.
-2. Review and approve the requested Spreadsheet, Drive, and trigger permissions for the dedicated account.
+2. Review and approve the requested Spreadsheet, Drive, trigger, and Gmail/Calendar/Docs/Chat permissions for the dedicated account. Sheets/Drive are needed immediately; the Workspace permissions are only used when you switch those channels on in Settings.
 3. Wait for completion. Setup creates:
    - `HRMS_CORE_DB_ID` and `HRMS_ATTENDANCE_<YEAR>_ID` in Script Properties;
    - every schema tab, frozen/protected header, and additive schema version;
@@ -49,28 +52,43 @@ Do not email or chat the one-time password. Do not write it in a source file. Th
 
 If setup reports that temporary properties are missing, add them and rerun. If it reports an invalid resource ID, correct that property rather than pointing production at an unknown spreadsheet.
 
-## 5. Deploy the JSON Web App
+## 5. Deploy the Web App (the only URL users ever need)
 
 1. Select **Deploy → New deployment → Web app**.
-2. Set **Execute as** to **Me** (the dedicated account).
-3. Set **Who has access** to **Anyone**. This permits the static site to call the API; it does not bypass login or authorization.
-4. Deploy and copy the Web App URL ending in `/exec`.
-5. Open the `/exec` URL in a browser. The only GET response is minimal health JSON: `{"ok":true,"data":{"status":"ok"},"reqId":null}`.
+2. Set **Execute as** to **Me** (the dedicated account). The account therefore owns Sheets, Drive files, mail, calendar events, tasks and generated documents.
+3. Set **Who has access** to **Anyone**. This only means the sign-in page is reachable; every action still requires an Employee ID and password.
+4. Deploy and copy the Web App URL ending in `/exec`. That URL is your entire application.
+5. Open the `/exec` URL. You get the FOCUSON HRMS sign-in screen. The page speaks to the server through `google.script.run`, so there is no API URL to configure and no CORS to debug.
+6. Health check: open `/exec?health=1` for `{"ok":true,"data":{"status":"ok"},"reqId":null}`.
 
-The API uses simple `POST` requests with `Content-Type: text/plain;charset=utf-8`; do not change this to a preflighted content type.
+## 6. Rebuild the screens after a frontend change
 
-## 6. Configure and publish GitHub Pages
+The screens are a single inlined HTML file so that Apps Script can serve them without external assets.
 
-1. Open `assets/js/config.js` and assign the exact `/exec` URL to `CONFIG.API_URL`. The URL is public configuration, not a secret.
-2. Commit only source files. Confirm no `.clasp.json`, credentials, exported Sheets, backup files, or `.env` files are included.
-3. Push the repository to GitHub.
-4. In **GitHub → Settings → Pages**, choose **Deploy from a branch**, select the company’s publishing branch and **/(root)**, then save.
-5. Wait for the Pages deployment and open the provided HTTPS URL. No build command or output directory is needed.
-6. Verify the landing page and language/theme controls. Until `API_URL` is configured correctly, the page displays a configuration notice instead of pretending to connect.
+1. Run `node tools/build-apps-script-ui.js` in the repository. It writes `frontend/Index.html` with every module, dictionary and icon inlined.
+2. In the Apps Script editor, open the `Index` HTML file, select all, and replace it with the new `frontend/Index.html` contents. Save.
+3. **Deploy → Manage deployments → Edit → New version → Deploy.** The `/exec` URL stays the same.
 
-Hash routing (`#/dashboard`) requires no server rewrite. `404.html` redirects accidental root-level requests back to the home page.
+`node tools/build-apps-script-ui.js --check` fails if the committed `frontend/Index.html` is out of date, which is what CI and the local verification chain use.
 
-## 7. First login and password rotation
+## 7. Google Workspace channels (optional, off by default)
+
+All delivery is switched off until you enable it in **Settings → Google Workspace**. Nothing breaks while it is off.
+
+| Setting | Default | What it enables |
+|---|---|---|
+| `MAIL_NOTIFICATIONS_ENABLED` | OFF | Gmail to the employee on leave decisions and payslip release, plus Gmail to approvers on assignment |
+| `MAIL_SUBJECT_PREFIX` | `[FOCUSON HRMS]` | Subject prefix on every outgoing message |
+| `CALENDAR_SYNC_ENABLED` | OFF | All-day Google Calendar events for approved leave and holidays |
+| `CALENDAR_ID` | `primary` | Target calendar; use a shared HR calendar ID for a team view |
+| `GOOGLE_CHAT_ENABLED` + `GOOGLE_CHAT_WEBHOOK_URL` | OFF | Approval cards and alerts in a Google Chat space |
+| `CONTACTS_SYNC_ENABLED` | OFF | Employee work contacts pushed to Google Contacts |
+| `TASKS_SYNC_ENABLED` | OFF | A Google Task per assigned approval |
+| `DOCS_EXPORT_ENABLED` | ON | Google Docs rendering for letters and payslip PDFs |
+
+Prove the wiring with **Settings → Google Workspace → Send test mail / Post test card**. Both run as the deployment account and report the real error instead of failing silently. To use Chat, create a space webhook (Space → Apps & integrations → Webhooks) and paste the full `https://chat.googleapis.com/...` URL into `GOOGLE_CHAT_WEBHOOK_URL`.
+
+## 8. First login and password rotation
 
 1. Enter the owner-supplied Employee ID and one-time password.
 2. The server forces the password-change screen before any dashboard/profile action.
@@ -80,9 +98,9 @@ Hash routing (`#/dashboard`) requires no server rewrite. `404.html` redirects ac
 
 Forgot-password intentionally instructs users to contact HR. Self-service email/SMS recovery and Google login are not enabled.
 
-## 8. Initial company configuration order
+## 9. Initial company configuration order
 
-The Phase 1 API exposes only safe public branding values. The editable Branding Studio and company administration screens arrive in Phase 2. For the complete system, configure in this dependency order as those phases are delivered:
+Configure these screens in dependency order. Settings cannot save a value that later modules need before its dependency exists.
 
 1. Organization departments, designations, branches, and work locations.
 2. Branch geofence coordinates, radii, accuracy rules, shifts, and attendance policies.
@@ -95,9 +113,9 @@ The Phase 1 API exposes only safe public branding values. The editable Branding 
 
 Do not type statutory rates from examples or assumptions. Obtain the company CA’s written configuration.
 
-## 9. Backup and restore drill
+## 10. Backup and restore drill
 
-Phase 1 creates private backup storage but does not claim a completed restore workflow. Until the Phase 5 verified backup/restore module is installed, perform this owner-only manual drill without changing production:
+The backup module creates private backup storage inside the Drive root. Perform this owner-only manual drill as an independent second copy, without changing production:
 
 1. Open both spreadsheets while signed in as the dedicated owner.
 2. Use **File → Make a copy** for each and place copies in the private Backups folder with an accurate timestamp in the filename.
@@ -107,7 +125,7 @@ Phase 1 creates private backup storage but does not claim a completed restore wo
 
 Schedule a real restore test after Phase 5 and restrict backup folder sharing. Never use “anyone with the link.”
 
-## 10. Redeploy without changing the frontend URL
+## 11. Redeploy without changing the URL
 
 1. Test source changes in a separate Apps Script project/deployment first.
 2. In the production project, select **Deploy → Manage deployments**.
@@ -115,9 +133,10 @@ Schedule a real restore test after Phase 5 and restrict backup folder sharing. N
 4. The existing `/exec` URL remains the same; do not create a new deployment for routine code updates.
 5. Recheck health JSON, login, forced password behavior, profile access, and logout-all. Review Apps Script execution logs by request ID if an error occurs.
 
-## 11. Operational checks and platform limits
+## 12. Operational checks and platform limits
 
 - Keep the dedicated owner account active and monitor its Drive/storage and Apps Script quotas.
+- Gmail is sent **as the deployment account** (`MailApp`), so outbound mail is limited by that account's daily quota (100 recipients/day on a consumer account, 1,500 on Workspace). `google.status` reports the remaining quota; high-volume payroll months should use the Settings digest action rather than per-employee mail.
 - Apps Script executions are time-limited; later payroll processing uses batches/resume triggers rather than assuming unlimited runtime.
 - Gmail, Calendar, Drive, CacheService, PropertiesService, and trigger quotas are account-specific and can change. Consult current Google Workspace quotas before high-volume use.
 - The default 10,000 HMAC rounds are intentionally conservative for Apps Script. Measure login execution time in the company account before increasing the work factor; do not lower it below the enforced minimum.

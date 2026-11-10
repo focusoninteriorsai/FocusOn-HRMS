@@ -26,7 +26,7 @@ var Database = (function () {
       ['language', 'string', 8], ['theme', 'string', 16], ['simple_mode', 'boolean'], ['last_login_at', 'datetime']
     ], ['employee_id', 'password_hash', 'password_salt']);
     core('Employees', [
-      ['employee_id', 'string', 64], ['display_name', 'string', 160], ['first_name', 'string', 100], ['last_name', 'string', 100],
+      ['employee_id', 'string', 64, ['google_contact_id', 'string', 128]], ['display_name', 'string', 160], ['first_name', 'string', 100], ['last_name', 'string', 100],
       ['work_email', 'string', 254], ['personal_email', 'string', 254], ['mobile', 'string', 32],
       ['department_id', 'string', 128], ['department', 'string', 160], ['designation_id', 'string', 128], ['designation', 'string', 160],
       ['branch_id', 'string', 128], ['branch', 'string', 160], ['reporting_manager_id', 'string', 64],
@@ -65,7 +65,7 @@ var Database = (function () {
     core('Geofence_Locations', [['branch_id', 'string', 128], ['name', 'string', 160], ['latitude', 'number'], ['longitude', 'number'], ['radius_meters', 'number'], ['minimum_accuracy_meters', 'number'], ['checkout_enabled', 'boolean'], ['outside_behavior', 'string', 40], ['gps_denied_behavior', 'string', 40], ['checkin_window_json', 'json', 4000]], ['branch_id', 'name', 'latitude', 'longitude', 'radius_meters']);
     core('Shifts', [['name', 'string', 160], ['start_time', 'string', 8], ['end_time', 'string', 8], ['rules_json', 'json', 16000], ['is_default', 'boolean'], ['break_minutes', 'number'], ['grace_minutes', 'number']], ['name']);
     core('Leave_Types', [['code', 'string', 64], ['name', 'string', 160], ['rules_json', 'json', 20000], ['description', 'string', 1000]], ['code', 'name']);
-    core('Leave_Applications', [['employee_id', 'string', 64], ['leave_type_id', 'string', 128], ['start_date', 'date'], ['end_date', 'date'], ['half_day', 'boolean'], ['half_day_period', 'string', 40], ['total_days', 'number'], ['reason', 'string', 4000], ['contact_during_leave', 'string', 100], ['handover_to', 'string', 64], ['decided_at', 'datetime'], ['attachment_file_id', 'string', 256], ['approval_id', 'string', 128]], ['employee_id', 'leave_type_id', 'start_date', 'end_date', 'reason']);
+    core('Leave_Applications', [['employee_id', 'string', 64], ['leave_type_id', 'string', 128], ['start_date', 'date'], ['end_date', 'date'], ['half_day', 'boolean'], ['half_day_period', 'string', 40], ['total_days', 'number'], ['reason', 'string', 4000], ['contact_during_leave', 'string', 100], ['handover_to', 'string', 64], ['decided_at', 'datetime'], ['attachment_file_id', 'string', 256], ['approval_id', 'string', 128], ['calendar_event_id', 'string', 256]], ['employee_id', 'leave_type_id', 'start_date', 'end_date', 'reason']);
     core('Leave_Balances', [['employee_id', 'string', 64], ['leave_type_id', 'string', 128], ['year', 'integer'], ['ledger_json', 'json', 30000], ['balance_days', 'number']], ['employee_id', 'leave_type_id', 'year']);
     core('Holidays', [['branch_id', 'string', 128], ['name', 'string', 160], ['holiday_date', 'date'], ['holiday_type', 'string', 60], ['description', 'string', 1000]], ['name', 'holiday_date']);
     core('Sites', [['code', 'string', 64], ['name', 'string', 160], ['branch_id', 'string', 128], ['address', 'string', 1000], ['latitude', 'number'], ['longitude', 'number'], ['radius_meters', 'number'], ['client_name', 'string', 160], ['contact_person', 'string', 160], ['contact_phone', 'string', 32]], ['code', 'name']);

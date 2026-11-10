@@ -38,6 +38,72 @@ var Actions = (function () {
     };
   }
 
+  /** Sends one test message to the caller so mail wiring can be proven. */
+  function googleTestMail(authentication, payload) {
+    var to = Utils.cleanString(payload.to) || Google.employeeEmail(authentication.actor.employeeId);
+    if (!to) Utils.fail('VALIDATION', 'Give a destination address or set the caller work email.');
+    var result = Google.sendMail(to, 'Test message from FOCUSON HRMS',
+      'Mail delivery works. Sent by ' + authentication.actor.employeeId + ' at ' + Utils.nowIso() + '.',
+      { force: true, prefix: Settings.text('MAIL_SUBJECT_PREFIX', '[FOCUSON HRMS]') + ' ' });
+    if (!result.ok) Utils.fail('VALIDATION', 'Mail could not be sent: ' + (result.error || 'unknown error'));
+    return { to: to, messageId: result.result, quota: Google.mailQuota().remaining };
+  }
+
+  /** Posts a test message to the configured Google Chat space. */
+  function googleTestChat(payload) {
+    var result = Google.chatSend(Utils.cleanString(payload && payload.text) || 'FOCUSON HRMS test message.', { force: true });
+    if (!result.ok) Utils.fail('VALIDATION', 'Chat could not be reached: ' + (result.error || 'no webhook configured'));
+    return { posted: true };
+  }
+
+  /** Pushes every active employee into Google Contacts (People advanced service). */
+  function googleSyncContacts(authentication, payload) {
+    var employees = Repo.employees().filter(function (row) {
+      return String(row.status).toUpperCase() === 'ACTIVE' && row.work_email;
+    }).slice(0, 100);
+    var synced = 0;
+    var failed = 0;
+    employees.forEach(function (row) {
+      var result = Google.syncContact(row.employee_id || row.id);
+      if (result.ok) synced += 1; else failed += 1;
+    });
+    return { synced: synced, failed: failed, total: employees.length, enabled: Google.contactsEnabled() };
+  }
+
+  /** Adds a holiday to the HRMS Google Calendar as an all-day event. */
+  function googleCreateHolidayEvent(authentication, payload) {
+    var holiday = Repo.requireRecord('Holidays', payload.holidayId, 'Holiday');
+    var result = Google.createAllDayEvent(holiday.name, holiday.holiday_date, holiday.holiday_date,
+      holiday.description || '', []);
+    if (!result.ok) Utils.fail('VALIDATION', 'Calendar event could not be created: ' + (result.error || 'calendar sync is off'));
+    return { eventId: result.result };
+  }
+
+  /** Mails every current approver a one-message digest of their open items. */
+  function googleMailDigest(authentication) {
+    if (!Google.mailEnabled()) Utils.fail('VALIDATION', 'E-mail delivery is switched off in Settings.');
+    var inbox = Workflow.inbox(authentication, { filter: 'pending', pageSize: 300 });
+    var byApprover = {};
+    (inbox.items || []).forEach(function (item) {
+      (item.approvers || []).forEach(function (employeeId) {
+        byApprover[employeeId] = (byApprover[employeeId] || 0) + 1;
+      });
+    });
+    var sent = 0;
+    Object.keys(byApprover).forEach(function (employeeId) {
+      var to = Google.employeeEmail(employeeId);
+      if (!to) return;
+      var result = Google.sendMail(to, 'Your open approvals: ' + byApprover[employeeId], [
+        Repo.employeeName(employeeId) + ',',
+        '',
+        'You have ' + byApprover[employeeId] + ' request(s) waiting for a decision.',
+        Google.appLink('/workflow') ? 'Open the approval inbox: ' + Google.appLink('/workflow') : ''
+      ].filter(Boolean).join('\n'), { prefix: Settings.text('MAIL_SUBJECT_PREFIX', '[FOCUSON HRMS]') + ' ' });
+      if (result.ok) sent += 1;
+    });
+    return { sent: sent, approvers: Object.keys(byApprover).length };
+  }
+
   var registry = {
     // ---------- Shell and identity ----------
     'access.bootstrap': self(function (payload, authentication) { return Access.bootstrap(authentication); }),
@@ -161,6 +227,14 @@ var Actions = (function () {
     'announcements.list': self(function (p, a) { return Announcements.list(a, p); }, { featureKey: 'announcements' }),
     'announcements.save': write('announcement.manage', function (p, a) { return Announcements.save(a, p); }, { featureKey: 'announcements' }),
     'announcements.remove': write('announcement.manage', function (p, a) { return Announcements.remove(a, p); }, { featureKey: 'announcements' }),
+
+    // ---------- Google Workspace integration ----------
+    'google.status': read('settings.view', function (p, a) { return Google.status(); }, { collection: true }),
+    'google.testMail': write('settings.edit', function (p, a) { return googleTestMail(a, p); }, {}),
+    'google.testChat': write('settings.edit', function (p, a) { return googleTestChat(p); }, {}),
+    'google.syncContacts': write('employee.edit', function (p, a) { return googleSyncContacts(a, p); }, {}),
+    'google.createCalendarEvent': write('settings.edit', function (p, a) { return googleCreateHolidayEvent(a, p); }, {}),
+    'google.mailDigest': write('settings.edit', function (p, a) { return googleMailDigest(a); }, {}),
 
     // ---------- Notifications ----------
     'notifications.list': self(function (p, a) { return Notifications.list(a, p); }),

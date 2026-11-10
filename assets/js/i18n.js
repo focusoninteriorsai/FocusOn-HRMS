@@ -15,7 +15,18 @@ function readStoredLanguage() {
   }
 }
 
+/* When Apps Script serves the UI (Google-only deployment) the dictionaries are
+ * baked into the page as window.__FOCUSON_I18N__, because HtmlService cannot
+ * fetch JSON files. The static build keeps loading them as JSON. */
+function bundledMessages(locale) {
+  const bundle = globalThis.__FOCUSON_I18N__;
+  if (!bundle || typeof bundle !== 'object') return null;
+  return bundle[locale] || null;
+}
+
 async function loadMessages(locale) {
+  const baked = bundledMessages(locale);
+  if (baked) return baked;
   const response = await fetch(new URL(`../i18n/${locale}.json`, import.meta.url), { cache: 'no-cache' });
   if (!response.ok) throw new Error('translationLoadFailed');
   return response.json();

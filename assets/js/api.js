@@ -3,6 +3,34 @@ import { CONFIG, getApiUrl } from './config.js';
 const inFlightReads = new Map();
 const TOKEN_KEY = 'focuson.session.token';
 
+/* Two transports, one contract. When the application is served by Google Apps
+ * Script (HtmlService, the Google-only deployment) requests go through
+ * google.script.run; when it is served as static files they go through fetch.
+ * Everything else in this file, including the envelope checks, is shared. */
+export function isAppsScriptHost() {
+  return Boolean(globalThis.google && google.script && typeof google.script.run === 'object');
+}
+
+/** Calls backend `api(requestJson)` through google.script.run.
+ *  Resolves with a fetch-like object so parseResponse() stays shared. */
+function scriptRunnerCall(requestJson) {
+  return new Promise((resolve, reject) => {
+    const failed = (message) => {
+      const error = makeError('NETWORK', 'networkUnavailable');
+      error.transportMessage = String(message || '');
+      reject(error);
+    };
+    try {
+      google.script.run
+        .withSuccessHandler((raw) => resolve({ text: () => String(raw) }))
+        .withFailureHandler((error) => failed(error && error.message))
+        .api(requestJson);
+    } catch (error) {
+      failed(error && error.message);
+    }
+  });
+}
+
 export function getSessionToken() {
   return sessionStorage.getItem(TOKEN_KEY) || '';
 }
@@ -59,13 +87,16 @@ export function apiRequest(action, payload = {}, options = {}) {
 }
 
 async function execute({ action, payload, token, reqId, skipAuth, isRead, retry }) {
-  let apiUrl;
-  try {
-    apiUrl = getApiUrl();
-  } catch (error) {
-    throw makeError('CONFIGURATION', 'invalidApiUrl');
+  const hosted = isAppsScriptHost();
+  let apiUrl = '';
+  if (!hosted) {
+    try {
+      apiUrl = getApiUrl();
+    } catch (error) {
+      throw makeError('CONFIGURATION', 'invalidApiUrl');
+    }
+    if (!apiUrl) throw makeError('CONFIGURATION', 'missingApiUrl');
   }
-  if (!apiUrl) throw makeError('CONFIGURATION', 'missingApiUrl');
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
@@ -73,6 +104,21 @@ async function execute({ action, payload, token, reqId, skipAuth, isRead, retry 
   safePayload.__client = { userAgent: navigator.userAgent.slice(0, 512) };
 
   try {
+    if (hosted) {
+      const requestJson = JSON.stringify({ action, token: token || null, payload: safePayload, reqId });
+      const envelope = await parseResponse(await scriptRunnerCall(requestJson));
+      if (envelope.reqId !== reqId) throw makeError('SERVER', 'requestIdMismatch');
+      if (!envelope.ok) {
+        const error = envelope.error || makeError('SERVER', 'unknownServerError');
+        if (!skipAuth && token && ['AUTH_REQUIRED', 'SESSION_EXPIRED'].includes(error.code)) {
+          clearSessionToken();
+          window.dispatchEvent(new CustomEvent('focuson:session-ended', { detail: { reason: 'expired' } }));
+        }
+        throw error;
+      }
+      return envelope.data;
+    }
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },

@@ -176,6 +176,56 @@ var Workflow = (function () {
     approvers.forEach(function (employeeId) {
       Notifications.push(employeeId, 'APPROVAL', 'Approval needed: ' + humanType(requestType), summary || 'A new request needs your decision.', 'inbox');
     });
+    notifyApproversViaGoogle(approvers, requestType, summary, approval);
+  }
+
+  /**
+   * Google delivery for an approval assignment: Gmail when enabled, and a Google
+   * Chat card when a webhook is configured. Both are best-effort: a delivery
+   * failure is audited and never blocks the request.
+   */
+  function notifyApproversViaGoogle(approvers, requestType, summary, approval) {
+    try {
+      if (typeof Google === 'undefined') return;
+      var title = 'Approval needed: ' + humanType(requestType);
+      var body = String(summary || 'A new request needs your decision.');
+      if (Google.mailEnabled()) {
+        var prefix = Settings.text('MAIL_SUBJECT_PREFIX', '[FOCUSON HRMS]') + ' ';
+        var link = Google.appLink('/workflow');
+        approvers.forEach(function (employeeId) {
+          var to = Google.employeeEmail(employeeId);
+          if (!to) return;
+          Google.sendMail(to, title, [
+            Repo.employeeName(employeeId) + ',',
+            '',
+            body,
+            '',
+            'Open the approval inbox: ' + (link || 'the HRMS approval inbox'),
+            '',
+            'This message was sent automatically by ' + Settings.text('COMPANY_NAME', 'FOCUSON HRMS') + '.'
+          ].join('\n'), { prefix: prefix });
+        });
+      }
+      if (Google.chatEnabled()) {
+        Google.chatSend('*' + title + '*\n' + body, {
+          cards: Google.chatApprovalCard(title, [{ label: humanType(requestType), value: body }], '/workflow')
+        });
+      }
+      if (Google.tasksEnabled()) {
+        var due = approvalDue(approval);
+        approvers.slice(0, 10).forEach(function (employeeId) {
+          Google.addTask(title, body, due);
+        });
+      }
+    } catch (error) {
+      Audit.logEvent('APPROVAL_GOOGLE_NOTIFY_FAILED', 'SYSTEM', 'Approvals', String(requestType || ''), 'FAILED',
+        { message: String(error && error.message).slice(0, 300) }, {});
+    }
+  }
+
+  /** Due date for a task created from an approval, when one is known. */
+  function approvalDue(approval) {
+    return approval && approval.due_at ? Utils.toIso(approval.due_at) : '';
   }
 
   function humanType(requestType) {
